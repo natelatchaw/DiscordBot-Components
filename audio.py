@@ -11,7 +11,7 @@ from discord.app_commands import Range, describe
 from configuration.section import Section
 from settings.settings import Settings
 
-from components.models.audio import (AudioLogger, InvalidChannelError,
+from models.audio import (AudioLogger, InvalidChannelError,
                                      Metadata, Request)
 
 log: Logger = logging.getLogger(__name__)
