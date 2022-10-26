@@ -292,10 +292,10 @@ class StableDiffusion:
         @staticmethod
         def medium(seed: int) -> StableDiffusion.Settings:
             return StableDiffusion.Settings(
-                dimensions=(380, 380),
+                dimensions=(384, 384),
                 downsampling=8,
                 batch_size=1,
-                scale=7.5,
+                scale=6.0,
                 channels=4,
                 eta=0.8,
                 seed=seed
@@ -304,7 +304,7 @@ class StableDiffusion:
         @staticmethod
         def high(seed: int) -> StableDiffusion.Settings:
             return StableDiffusion.Settings(
-                dimensions=(448, 448),
+                dimensions=(512, 512),
                 downsampling=8,
                 batch_size=1,
                 scale=8.0,
