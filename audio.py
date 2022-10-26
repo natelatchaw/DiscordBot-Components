@@ -8,8 +8,8 @@ import discord
 import youtube_dl
 from discord import Interaction
 from discord.app_commands import Range, describe
-from configuration.section import Section
-from settings.settings import Settings
+from bot.configuration.section import Section
+from bot.settings.settings import Settings
 
 from models.audio import (AudioLogger, InvalidChannelError,
                                      Metadata, Request)

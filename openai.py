@@ -8,15 +8,15 @@ from logging import Logger
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Union
 
-from configuration import Section
-from database.database import Database
+from bot import Database, Settings
+from bot.configuration import Section
 from discord import Embed, Interaction, Member, User
 from discord.app_commands import Choice, Range, choices, describe
-from settings.settings import Settings
 
 import openai
-from components.models.openai import Submission
 from openai.openai_object import OpenAIObject
+
+from models.openai import Submission
 
 log: Logger = logging.getLogger(__name__)
 

@@ -5,10 +5,10 @@ from sqlite3 import Row
 from typing import Any, Dict, Tuple, Type, Optional
 
 import discord
-from database.column import ColumnBuilder
-from database.storable import Storable, TStorable
-from database.table import Table, TableBuilder
-from discord import AudioSource, Interaction
+from bot.database.column import ColumnBuilder
+from bot.database.storable import TStorable
+from bot.database.table import Table, TableBuilder
+from discord import AudioSource
 
 log: logging.Logger = logging.getLogger(__name__)
 
@@ -141,8 +141,10 @@ class Metadata():
         channel: str = row['Channel']
         # Get thumbnail value from the row
         thumbnail: str = row['Thumbnail']
+        # Get thumbnail value from the row
+        video_url: str = row['VideoURL']
         # return the Metadata
-        return Metadata(id, user_id, video_id, url, title, channel, thumbnail)
+        return Metadata(id, user_id, video_id, url, title, channel, thumbnail, video_url)
 
 
 class Request():

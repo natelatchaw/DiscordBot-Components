@@ -1,11 +1,13 @@
+from __future__ import annotations
+
 import re
 from math import ceil
 from sqlite3 import Row
 from typing import Any, List, Tuple, Type
 
-from database.column import ColumnBuilder
-from database.storable import Storable, TStorable
-from database.table import Table, TableBuilder
+from bot.database.column import ColumnBuilder
+from bot.database.storable import Storable, TStorable
+from bot.database.table import Table, TableBuilder
 
 
 class Submission(Storable):
@@ -90,7 +92,7 @@ class Submission(Storable):
         return value
         
     @classmethod
-    def __from_row__(cls: Type[TStorable], row: Row) -> TStorable:
+    def __from_row__(cls: Type[Submission], row: Row) -> Submission:
         # get ID value from the row
         id: int = row['ID']
         # get UserID value from the row

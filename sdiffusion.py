@@ -13,19 +13,18 @@ import einops
 import numpy
 import torch
 import transformers
+from bot.settings import Settings
+from bot.settings.section import SettingsSection
 from discord import File, Interaction
 from discord.app_commands import describe
 from ldm.models.diffusion.ddim import DDIMSampler
 from omegaconf import OmegaConf
 from PIL import Image
 from pytorch_lightning import seed_everything
-from settings.section import SettingsSection
-from settings.settings import Settings
 from torch import Tensor, device
 from torch.nn import Module
 
-from components.models.sdiffusion import (StableDiffusionPresets,
-                                          StableDiffusionSettings)
+from models.sdiffusion import StableDiffusionPresets, StableDiffusionSettings
 
 log: Logger = logging.getLogger(__name__)
 transformers.logging.set_verbosity_error()
