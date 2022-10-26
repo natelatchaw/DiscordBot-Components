@@ -71,6 +71,8 @@ class StableDiffusion:
         key: str = "device_id"
         # get the string stored in the config, if available
         value: Optional[str] = self._config.get_string(key)
+        # throw error if value is not provided
+        if value is None: raise Exception('No device specified for ML computation.')
         # return the config value if available, otherwise return the fallback
         return value if value is not None else fallback
 
