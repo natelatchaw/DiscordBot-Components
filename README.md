@@ -19,6 +19,3 @@ Further positional and keyword arguments are used to add arguments to the applic
 - [discord.app_commands.Transformer](https://discordpy.readthedocs.io/en/latest/interactions/api.html#transformer)
 - [discord.app_commands.Range](https://discordpy.readthedocs.io/en/latest/interactions/api.html#range)
 - other applicable types provided by discord.app_commands
-
-## Supplementary Models
-Any classes that should not be imported as a component should be placed in the [/models](https://github.com/natelatchaw/DiscordBot-Components/tree/master/models) directory to prevent unintentional import. This may include any `Error` subclasses  or custom types used by the component.

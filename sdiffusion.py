@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import functools
 import importlib
@@ -7,7 +9,7 @@ from logging import Logger
 from pathlib import Path
 from random import Random
 from types import ModuleType
-from typing import Any, Dict, List, Literal, MutableMapping, Optional
+from typing import Any, Dict, List, Literal, MutableMapping, Optional, Tuple
 
 import einops
 import numpy
@@ -21,15 +23,14 @@ from ldm.models.diffusion.ddim import DDIMSampler
 from omegaconf import OmegaConf
 from PIL import Image
 from pytorch_lightning import seed_everything
-from torch import Tensor, device
+from torch import Size, Tensor, device
 from torch.nn import Module
-
-from models.sdiffusion import StableDiffusionPresets, StableDiffusionSettings
 
 log: Logger = logging.getLogger(__name__)
 transformers.logging.set_verbosity_error()
 
-class StableDiffusion():
+
+class StableDiffusion:
 
     @property
     def cpkt(self) -> Optional[Path]:
@@ -113,13 +114,13 @@ class StableDiffusion():
 
         try:
             seed: int = Random().randint(0, 99999)
-            settings: StableDiffusionSettings = StableDiffusionPresets.medium(seed)
+            settings: StableDiffusion.Settings = StableDiffusion.Presets.medium(seed)
             if preset == 'low':
-                settings = StableDiffusionPresets.low(seed)
+                settings = StableDiffusion.Presets.low(seed)
             if preset == 'medium':
-                settings = StableDiffusionPresets.medium(seed)
+                settings = StableDiffusion.Presets.medium(seed)
             if preset == 'high':
-                settings = StableDiffusionPresets.high(seed)
+                settings = StableDiffusion.Presets.high(seed)
 
             seed_everything(settings.seed)
 
@@ -147,7 +148,7 @@ class StableDiffusion():
 
     @torch.no_grad()
     #@torch.autocast(DEVICE_TYPE)
-    def __infer__(self, prompt: str, settings: StableDiffusionSettings, sampler: DDIMSampler, sampling_steps: int = 50) -> List[Image.Image]:
+    def __infer__(self, prompt: str, settings: StableDiffusion.Settings, sampler: DDIMSampler, sampling_steps: int = 50) -> List[Image.Image]:
 
         with self._model.ema_scope():  # type: ignore
             start_code: Tensor = torch.randn(settings.size, device=self.device)
@@ -166,7 +167,7 @@ class StableDiffusion():
             )
 
             x_ddim_samples: Tensor = self._model.decode_first_stage(ddim_samples) # type: ignore
-            x_ddim_samples: Tensor = torch.clamp((x_ddim_samples + 1.0) / 2.0, min=0.0, max=1.0)
+            x_ddim_samples = torch.clamp((x_ddim_samples + 1.0) / 2.0, min=0.0, max=1.0)
 
             outputs: List[Image.Image] = list()
 
@@ -196,4 +197,95 @@ class StableDiffusion():
         # instantiate the model using the given parameters
         return model(**params)
 
+
+
+    class Settings:
+
+        def __init__(self, *, dimensions: Tuple[int, int], downsampling: int, batch_size: int, scale: float, channels: int, eta: float, seed: int):
+            self._height: int = dimensions[0]
+            self._width: int = dimensions[1]
+            self._downsampling: int = downsampling
+            self._batch_size: int = batch_size
+            self._scale: float = scale
+            self._channels: int = channels
+            self._eta: float = eta
+            self._seed: int = seed
+
+        @property
+        def height(self) -> int: return self._height
+
+        @property
+        def width(self) -> int: return self._width
+
+        @property
+        def downsampling(self) -> int: return self._downsampling
+
+        @property
+        def batch_size(self) -> int: return self._batch_size
+
+        @property
+        def scale(self) -> float: return self._scale
+
+        @property
+        def channels(self) -> int: return self._channels
+
+        @property
+        def eta(self) -> float: return self._eta
+
+        @property
+        def seed(self) -> int: return self._seed
+
+        @property
+        def shape(self) -> List[int]: return [
+            self._channels,
+            self._height // self._downsampling,
+            self._width // self._downsampling
+        ]
+
+        @property
+        def size(self) -> Size: return Size([
+            self._batch_size,
+            self._channels,
+            self._height // self._downsampling,
+            self._width // self._downsampling
+        ])
+
+
+    class Presets:
+
+        @staticmethod
+        def low(seed: int) -> StableDiffusion.Settings:
+            return StableDiffusion.Settings(
+                dimensions=(256, 256),
+                downsampling=8,
+                batch_size=1,
+                scale=4.0,
+                channels=4,
+                eta=0.75,
+                seed=seed
+            )
+
+        @staticmethod
+        def medium(seed: int) -> StableDiffusion.Settings:
+            return StableDiffusion.Settings(
+                dimensions=(380, 380),
+                downsampling=8,
+                batch_size=1,
+                scale=7.5,
+                channels=4,
+                eta=0.8,
+                seed=seed
+            )
+
+        @staticmethod
+        def high(seed: int) -> StableDiffusion.Settings:
+            return StableDiffusion.Settings(
+                dimensions=(448, 448),
+                downsampling=8,
+                batch_size=1,
+                scale=8.0,
+                channels=4,
+                eta=0.85,
+                seed=seed
+            )
 
