@@ -47,6 +47,20 @@ class StableDiffusion:
             return None
 
     @property
+    def yaml(self) -> Optional[Path]:
+        key: str = "yaml"
+        value: Optional[str] = None
+        try:
+            value = self._config[key]
+            return Path(value).resolve() if value and isinstance(value, str) else None
+        except KeyError:
+            self._config[key] = ""
+            return None
+        except ValueError:
+            self._config[key] = ""
+            return None
+
+    @property
     def device_id(self) -> str:
         """
         Reads the `device_id` flag from configuration
@@ -86,7 +100,8 @@ class StableDiffusion:
         global_step: str = pl_sd['global_step']        
         state_dict = pl_sd["state_dict"]
 
-        config = OmegaConf.load(Path('./v1-inference.yaml').resolve())
+        yaml: Path = self.yaml if self.yaml else Path('./v1-inference.yaml')
+        config = OmegaConf.load(yaml.resolve())
         self._model: Optional[Module] = await self.__get_model__(config)  # type: ignore
         if self._model is None: raise Exception(f'Failed to load model from {cpkt.name}')
 
@@ -180,6 +195,7 @@ class StableDiffusion:
 
 
     async def __get_model__(self, config: MutableMapping[Any, Any]) -> Optional[Module]:
+        
         # get the model metadata dictionary
         model_data: Dict[str, Any] = config.get('model', dict())
         # get the model's class name from the model metadata
@@ -194,6 +210,12 @@ class StableDiffusion:
         model: Any = getattr(module, class_name)
         # get model parameters from the model data
         params: Dict = model_data.get('params', dict())
+
+        # get the conditioning stage config section
+        params['cond_stage_config'] = params.get('cond_stage_config', dict())
+        # set the device id
+        params['cond_stage_config']['device']: str = self.device_id
+
         # instantiate the model using the given parameters
         return model(**params)
 
