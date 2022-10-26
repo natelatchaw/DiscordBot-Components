@@ -212,9 +212,11 @@ class StableDiffusion:
         params: Dict = model_data.get('params', dict())
 
         # get the conditioning stage config section
-        params['cond_stage_config'] = params.get('cond_stage_config', dict())
+        params['cond_stage_config']: Dict = params.get('cond_stage_config', dict())
+        # get the conditioning stage parameters config section
+        params['cond_stage_config']['params']: Dict = params['cond_stage_config'].get('params', dict())
         # set the device id
-        params['cond_stage_config']['device']: str = self.device_id
+        params['cond_stage_config']['params']['device']: str = self.device_id
 
         # instantiate the model using the given parameters
         return model(**params)
