@@ -34,6 +34,7 @@ permitted in a Discord message
 
 # define model costs
 MODEL_COSTS: Dict[str, float] = {
+    'text-davinci-003': 0.0600 / 1000,
     'text-davinci-002': 0.0600 / 1000,
     'text-curie-001':   0.0060 / 1000,
     'text-babbage-001': 0.0012 / 1000,
@@ -101,7 +102,7 @@ class OpenAI():
         self._database: Database = Database(Path('./data/openai.db'))
 
 
-    async def __send__(self, interaction: Interaction, prompt: str, model: str = 'text-davinci-002', tokens: Union[int, str] = 128, echo: bool = False) -> List[str]:
+    async def __send__(self, interaction: Interaction, prompt: str, model: str = 'text-davinci-003', tokens: Union[int, str] = 128, echo: bool = False) -> List[str]:
         # check enabled configuration parameter
         if not self.is_enabled: raise ValueError('This command has been disabled.')
         # get the message's author
@@ -223,10 +224,10 @@ class OpenAI():
         Choice(name='Ada',      value='text-ada-001'),
         Choice(name='Babbage',  value='text-babbage-001'),
         Choice(name='Curie',    value='text-curie-001'),
-        Choice(name='DaVinci',  value='text-davinci-002'),
+        Choice(name='DaVinci',  value='text-davinci-003'),
     ])
     @describe(tokens='The maximum number of tokens to limit the response to')
-    async def prompt(self, interaction: Interaction, content: str, model: str = 'text-davinci-002', tokens: Range[int, 64, 1024] = 128) -> None:
+    async def prompt(self, interaction: Interaction, content: str, model: str = 'text-davinci-003', tokens: Range[int, 64, 1024] = 128) -> None:
         """
         Provides a prompt to the designated AI model and generates a response.
         """
@@ -250,10 +251,10 @@ class OpenAI():
         Choice(name='Ada', value='text-ada-001'),
         Choice(name='Babbage', value='text-babbage-001'),
         Choice(name='Curie', value='text-curie-001'),
-        Choice(name='DaVinci', value='text-davinci-002'),
+        Choice(name='DaVinci', value='text-davinci-003'),
     ])
     @describe(tokens='The maximum number of tokens to limit the response to')
-    async def write(self, interaction: Interaction, a: str, about: str, model: str = 'text-davinci-002', tokens: Range[int, 64, 1024] = 128) -> None:
+    async def write(self, interaction: Interaction, a: str, about: str, model: str = 'text-davinci-003', tokens: Range[int, 64, 1024] = 128) -> None:
         """
         Generates a text response provided a prompt about what to write.
         """
@@ -286,10 +287,10 @@ class OpenAI():
         Choice(name='Ada', value='text-ada-001'),
         Choice(name='Babbage', value='text-babbage-001'),
         Choice(name='Curie', value='text-curie-001'),
-        Choice(name='DaVinci', value='text-davinci-002'),
+        Choice(name='DaVinci', value='text-davinci-003'),
     ])
     @describe(tokens='The maximum number of tokens to limit the response to')
-    async def greentext(self, interaction: Interaction, be_me: str, model: str = 'text-davinci-002', tokens: Range[int, 64, 1024] = 256) -> None:
+    async def greentext(self, interaction: Interaction, be_me: str, model: str = 'text-davinci-003', tokens: Range[int, 64, 1024] = 256) -> None:
         """
         Generates a 4chan-style greentext.
         """
