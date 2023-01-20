@@ -39,6 +39,9 @@ MODEL_COSTS: Dict[str, float] = {
     'text-curie-001':   0.0060 / 1000,
     'text-babbage-001': 0.0012 / 1000,
     'text-ada-001':     0.0008 / 1000,
+    'image-1024x1024':  0.0200 / 1,
+    'image-512x512':    0.0180 / 1,
+    'image-256x256':    0.0160 / 1,
 }
 
 class OpenAI():
@@ -102,7 +105,7 @@ class OpenAI():
         self._database: Database = Database(Path('./data/openai.db'))
 
 
-    async def __send__(self, interaction: Interaction, prompt: str, model: str = 'text-davinci-003', tokens: Union[int, str] = 128, echo: bool = False) -> List[str]:
+    async def __send_completion__(self, interaction: Interaction, prompt: str, model: str = 'text-davinci-003', tokens: Union[int, str] = 128, echo: bool = False) -> List[str]:
         # check enabled configuration parameter
         if not self.is_enabled: raise ValueError('This command has been disabled.')
         # get the message's author
@@ -119,12 +122,41 @@ class OpenAI():
         # get the list of text responses
         responses: List[str] = [choice.text for choice in choices]
 
+        # get rate for the selected model
+        rate: float = MODEL_COSTS[model]
         # create submission object
-        submission: Submission = Submission(interaction.id, user.id, model, prompt, '\n'.join(responses))
+        submission: Submission = TextSubmission(interaction.id, user.id, rate, model, prompt, '\n'.join(responses))
         # store the submission
         await self.__store__(interaction, submission=submission)
 
         # return the responses
+        return responses
+
+
+    async def __send_image__(self, interaction: Interaction, prompt: str, size: str = '512x512', count: Union[int, str] = 1) -> List[str]:
+        # check enabled configuration parameter
+        if not self.is_enabled: raise ValueError('This command has been disabled.')
+        # get the message's author
+        user: Union[User, Member] = interaction.user
+        # hash an ID from the author's ID
+        id: int = hash(user.id)
+        # convert the count parameter to an int if not already an int
+        count = count if isinstance(count, int) else int(count)
+        # create the Image request
+        response: OpenAIObject = openai.Image.create(prompt=prompt, n=count, size=size, response_format='url', user=str(id))  # type: ignore
+
+        # get the data list
+        images: List[OpenAIObject] = response.data
+        # get the list of image references
+        responses: List[str] = [image['url'] for image in images]
+
+        # get rate for the selected model
+        rate: float = MODEL_COSTS[f'image-{size}']
+        # create submission object
+        submission: Submission = ImageSubmission(interaction.id, user.id, rate, count, size)
+        # store the submission
+        await self.__store__(interaction, submission=submission)
+
         return responses
 
 
@@ -144,9 +176,7 @@ class OpenAI():
         return submissions
 
     
-    async def __print__(self, interaction: Interaction, *, responses: List[str]):
-        # define the block tag for code block messages
-        block_tag: str = '```'
+    async def __print__(self, interaction: Interaction, *, responses: List[str], block_tag: str = '```'):
         # for each returned response
         for response in responses:
             # calculate the max characters that can be inserted into each message's code block
@@ -164,7 +194,7 @@ class OpenAI():
             # retrieve the cost per token for the model used by the submission
             cost_per_token: float = costs[submission.model]
             # calculate the total cost
-            total_cost: float = submission.token_count * cost_per_token
+            total_cost: float = submission.rate * submission.count
             # return the cost
             return total_cost
         except KeyError as error:
@@ -218,7 +248,7 @@ class OpenAI():
             await interaction.followup.send(embed=embed)
 
 
-    @describe(content='The input to provide to the AI model')
+    @describe(prompt='The input to provide to the AI model')
     @describe(model='The AI model to use for text generation')
     @choices(model=[
         Choice(name='Ada',      value='text-ada-001'),
@@ -227,19 +257,44 @@ class OpenAI():
         Choice(name='DaVinci',  value='text-davinci-003'),
     ])
     @describe(tokens='The maximum number of tokens to limit the response to')
-    async def prompt(self, interaction: Interaction, content: str, model: str = 'text-davinci-003', tokens: Range[int, 64, 1024] = 128) -> None:
+    async def text(self, interaction: Interaction, prompt: str, model: str = 'text-davinci-003', tokens: Range[int, 64, 1024] = 128) -> None:
         """
-        Provides a prompt to the designated AI model and generates a response.
+        Provides a prompt to the designated AI model and generates text responses.
         """
 
         try:
             # defer the interaction
             await interaction.response.defer(thinking=True)
             # send the prompt
-            responses: List[str] = await self.__send__(interaction, prompt=content, model=model, tokens=tokens, echo=False)
+            responses: List[str] = await self.__send_completion__(interaction, prompt=prompt, model=model, tokens=tokens, echo=False)
             # send the responses
             await self.__print__(interaction, responses=responses)
 
+        except Exception as error:
+            await interaction.followup.send(f'{error}')
+
+
+    @describe(prompt='The input to provide to the AI model')
+    @describe(size='The size of the images to generate')
+    @choices(size=[
+        Choice(name='Small',    value='256x256'),
+        Choice(name='Medium',   value='512x512'),
+        Choice(name='Large',    value='1024x1024'),
+    ])
+    @describe(images='The number of images to generate')
+    async def image(self, interaction: Interaction, prompt: str, size: str = '512x512', images: Range[int, 1, 2] = 1) -> None:
+        """
+        Provides a prompt to the AI model and generates image responses.
+        """
+
+        try:
+            # defer the interaction
+            await interaction.response.defer(thinking=True)
+            # send the prompt
+            responses: List[str] = await self.__send_image__(interaction, prompt=prompt, size=size, count=images)
+            # send the responses
+            await self.__print__(interaction, responses=responses, block_tag='')
+        
         except Exception as error:
             await interaction.followup.send(f'{error}')
 
@@ -273,7 +328,7 @@ class OpenAI():
             # join the content by spaces
             prompt: str = ' '.join(content)
             # send the prompt
-            responses: List[str] = await self.__send__(interaction, prompt=prompt, model=model, tokens=tokens, echo=False)
+            responses: List[str] = await self.__send_completion__(interaction, prompt=prompt, model=model, tokens=tokens, echo=False)
             # send the responses
             await self.__print__(interaction, responses=responses)
 
@@ -313,37 +368,21 @@ class OpenAI():
             # join the content by newlines
             prompt: str = '\n'.join(content)
             # send the prompt
-            responses: List[str] = await self.__send__(interaction, prompt=prompt, model=model, tokens=tokens, echo=True)
+            responses: List[str] = await self.__send_completion__(interaction, prompt=prompt, model=model, tokens=tokens, echo=True)
             # send the responses
             await self.__print__(interaction, responses=responses)
             
         except Exception as error:
             await interaction.followup.send(f'{error}')
 
-
 class Submission(Storable):
-
-    def __init__(self, id: int, user_id: int, model: str, prompt: str, response: str) -> None:
+    
+    def __init__(self, id: int, user_id: int, rate: float, count: int, model: str) -> None:
         self._id: int = id
         self._user_id: int = user_id
+        self._rate: float = rate
+        self._count: int = count
         self._model: str = model
-        self._prompt: str = prompt
-        self._response: str = response
-        self._token_count: int = self.__get_tokens__()
-
-    def __get_tokens__(self) -> int:
-        # split the prompt by whitespace characters
-        prompt_segments: List[str] = re.split(r"[\s]+", self._prompt)
-        # get a token count for each word
-        prompt_token_counts: List[int] = [ceil(len(prompt_segment) / 4) for prompt_segment in prompt_segments]
-
-        # split the response by whitespace characters
-        response_segments: List[str] = re.split(r"[\s]+", self._prompt)
-        # get a token count for each word
-        response_token_counts: List[int] = [ceil(len(response_segment) / 4) for response_segment in response_segments]
-
-        # return the sum of token counts
-        return sum(prompt_token_counts) + sum(response_token_counts)
 
     @property
     def id(self) -> int:
@@ -354,20 +393,16 @@ class Submission(Storable):
         return self._user_id
 
     @property
+    def rate(self) -> float:
+        return self._rate
+
+    @property
+    def count(self) -> int:
+        return self._count
+
+    @property
     def model(self) -> str:
         return self._model
-
-    @property
-    def prompt(self) -> str:
-        return self._prompt
-
-    @property
-    def response(self) -> str:
-        return self._response
-    
-    @property
-    def token_count(self) -> int:
-        return self._token_count
 
     @classmethod
     def __table__(self) -> Table:
@@ -382,14 +417,12 @@ class Submission(Storable):
         t_builder.addColumn(c_builder.setName('ID').setType('INTEGER').isPrimary().isUnique().column())
         # create user ID column
         t_builder.addColumn(c_builder.setName('UserID').setType('INTEGER').column())
+        # create rate column
+        t_builder.addColumn(c_builder.setName('Rate').setType('REAL').column())
+        # create count column
+        t_builder.addColumn(c_builder.setName('Count').setType('INTEGER').column())
         # create model column
         t_builder.addColumn(c_builder.setName('Model').setType('TEXT').column())
-        # create prompt column
-        t_builder.addColumn(c_builder.setName('Prompt').setType('TEXT').column())
-        # create response column
-        t_builder.addColumn(c_builder.setName('Response').setType('TEXT').column())
-        # create token count column
-        t_builder.addColumn(c_builder.setName('TokenCount').setType('INTEGER').column())
         
         # build the table
         table: Table = t_builder.table()
@@ -398,7 +431,7 @@ class Submission(Storable):
 
     def __values__(self) -> Tuple[Any, ...]:
         # create a tuple with the corresponding values
-        value: Tuple[Any, ...] = (self.id, self.user_id, self.model, self.prompt, self.response, self.token_count)
+        value: Tuple[Any, ...] = (self.id, self.user_id, self.rate, self.count, self.model)
         # return the tuple
         return value
         
@@ -408,13 +441,103 @@ class Submission(Storable):
         id: int = row['ID']
         # get UserID value from the row
         user_id: int = row['UserID']
+        # get Rate value from the row
+        rate: float = row['Rate']
+        # get Count value from the row
+        count: int = row['Count']
         # get Model value from the row
         model: str = row['Model']
-        # get Prompt value from the row
-        prompt: str = row['Prompt']
-        # get Response value from the row
-        response: str = row['Response']
-        # get TokenCount value from the row
-        token_count: int = row['TokenCount']
         # return the Submission
-        return Submission(id, user_id, model, prompt, response)
+        return Submission(id, user_id, rate, count, model)
+
+
+class ImageSubmission(Submission):
+
+    def __init__(self, id: int, user_id: int, rate: float, count: int, size: str) -> None:
+        self._id: int = id
+        self._user_id: int = user_id
+        self._rate: float = rate
+        self._count: int = count
+        self._model: str = f'image-{size}'
+
+        super().__init__(self._id, self._user_id, self._rate, self._count, self._model)
+
+    @property
+    def id(self) -> int:
+        return self._id
+
+    @property
+    def user_id(self) -> int:
+        return self._user_id
+
+    @property
+    def rate(self) -> float:
+        return self._rate
+    
+    @property
+    def count(self) -> int:
+        return self._count
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+
+
+class TextSubmission(Submission):
+
+    def __init__(self, id: int, user_id: int, rate: float, prompt: str, response: str, model: str) -> None:
+        self._id: int = id
+        self._user_id: int = user_id
+        self._rate: float = rate
+        self._count: int = self.__get_tokens__()
+        self._model: str = model
+
+        self._prompt: str = prompt
+        self._response: str = response        
+
+        super().__init__(self._id, self._user_id, self._rate, self._count, self._model)
+
+    @property
+    def id(self) -> int:
+        return self._id
+
+    @property
+    def user_id(self) -> int:
+        return self._user_id
+
+    @property
+    def rate(self) -> float:
+        return self._rate
+    
+    @property
+    def count(self) -> int:
+        return self._count
+
+    @property
+    def model(self) -> str:
+        return self._model
+    
+
+    @property
+    def prompt(self) -> str:
+        return self._prompt
+
+    @property
+    def response(self) -> str:
+        return self._response
+
+
+    def __get_tokens__(self) -> int:
+        # split the prompt by whitespace characters
+        prompt_segments: List[str] = re.split(r"[\s]+", self._prompt)
+        # get a token count for each word
+        prompt_token_counts: List[int] = [ceil(len(prompt_segment) / 4) for prompt_segment in prompt_segments]
+
+        # split the response by whitespace characters
+        response_segments: List[str] = re.split(r"[\s]+", self._prompt)
+        # get a token count for each word
+        response_token_counts: List[int] = [ceil(len(response_segment) / 4) for response_segment in response_segments]
+
+        # return the sum of token counts
+        return sum(prompt_token_counts) + sum(response_token_counts)
