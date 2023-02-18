@@ -7,7 +7,7 @@ from logging import Logger
 from typing import Any, Dict, List, Optional, Union
 
 import discord
-import youtube_dl
+import yt_dlp as youtube_dl
 from bot.configuration.section import Section
 from bot.settings.settings import Settings
 from discord import Interaction
@@ -26,7 +26,7 @@ class Audio():
         value: Optional[str] = None
         try:
             value = self._config[key]
-            return float(value) if value and isinstance(value, str) else None                
+            return float(value) if value and isinstance(value, str) else None
         except KeyError:
             self._config[key] = ""
             return None
@@ -37,7 +37,7 @@ class Audio():
     @timeout.setter
     def timeout(self, value: float) -> None:
         key: str = "timeout"
-        if value: self._config[key] = str(value)        
+        if value: self._config[key] = str(value)
 
 
     def __init__(self, *args, **kwargs):
@@ -50,7 +50,7 @@ class Audio():
         self._playback_queue: Queue = Queue()
         self._client: Optional[discord.VoiceClient] = None
         self._current: Optional[Metadata] = None
-        
+
         try:
             self._settings: Settings = kwargs['settings']
         except KeyError as error:
