@@ -490,11 +490,12 @@ class TextSubmission(Submission):
         self._id: int = id
         self._user_id: int = user_id
         self._rate: float = rate
-        self._count: int = self.__get_tokens__()
-        self._model: str = model
 
         self._prompt: str = prompt
-        self._response: str = response        
+        self._response: str = response
+        
+        self._count: int = self.__get_tokens__()
+        self._model: str = model 
 
         super().__init__(self._id, self._user_id, self._rate, self._count, self._model)
 
