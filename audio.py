@@ -4,13 +4,17 @@ import asyncio
 import logging
 from asyncio import Event, Queue
 from logging import Logger
-from typing import Any, Dict, List, Optional, Union
+from sqlite3 import Row
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import discord
 import yt_dlp as youtube_dl
 from bot.configuration.section import Section
+from bot.database.column import ColumnBuilder
+from bot.database.storable import TStorable
+from bot.database.table import Table, TableBuilder
 from bot.settings.settings import Settings
-from discord import Interaction
+from discord import AudioSource, Interaction
 from discord.app_commands import Range, describe
 
 log: Logger = logging.getLogger(__name__)
@@ -19,6 +23,8 @@ class Audio():
     """
     Component responsible for audio playback.
     """
+
+    #region Properties
 
     @property
     def timeout(self) -> Optional[float]:
@@ -39,6 +45,10 @@ class Audio():
         key: str = "timeout"
         if value: self._config[key] = str(value)
 
+    #endregion
+
+
+    #region Lifecycle Events
 
     def __init__(self, *args, **kwargs):
         """
@@ -49,7 +59,7 @@ class Audio():
         self._playback_event: Event = Event()
         self._playback_queue: Queue = Queue()
         self._client: Optional[discord.VoiceClient] = None
-        self._current: Optional[Metadata] = None
+        self._current: Optional[Audio.Metadata] = None
 
         try:
             self._settings: Settings = kwargs['settings']
@@ -69,26 +79,10 @@ class Audio():
         # begin audio loop
         await self.__start__()
 
-
-    def __on_complete__(self, error: Optional[Exception]):
-        """
-        Called when a request completes in the audio loop.
-        """
-
-        # set the playback event
-        self._playback_event.set()
-        # log error if it was provided
-        if error: log.error(error)
+    #endregion
 
 
-    def __on_dequeue__(self, request: Request) -> None:
-        """
-        Called when a request is retrieved from the queue.
-        """
-
-        # set the current metadata
-        self._current = request.metadata
-
+    #region Core Loop Events
 
     async def __start__(self):
         """
@@ -100,51 +94,76 @@ class Audio():
             try:
                 # wait for the connection event to be set
                 await self._connection.wait()
-                log.debug(f"Beginning core audio playback loop")
 
                 # if the voice client is not available
                 if self._client is None:
                     # clear the connection event
                     self._connection.clear()
-                    log.debug(f"Resetting; no voice client available")
+                    log.debug('Resetting; no voice client available')
                     # restart the loop
                     continue
 
-                log.debug(f"Waiting for next audio request")
+                log.debug('Waiting for next audio playback request')
                 # wait for the playback queue to return a request, or throw TimeoutError
-                request: Request = await asyncio.wait_for(self._playback_queue.get(), self.timeout)
+                request: Audio.Request = await asyncio.wait_for(self._playback_queue.get(), self.timeout)
 
                 # call dequeue hook logic
-                self.__on_dequeue__(request)
+                await self.__on_dequeue__(request)
 
-                # clear the playback event
-                self._playback_event.clear()
-                log.debug(f"Beginning track '{request.metadata.title}'")
+            except (asyncio.TimeoutError, Exception) as error:
+                # call error hook logic
+                await self.__on_error__(error)
 
-                # play the request
-                self._client.play(request.source, after=self.__on_complete__)
 
-                # wait for the playback event to be set
-                await self._playback_event.wait()
-                log.debug(f"Finishing track '{request.metadata.title}'")
+    async def __on_dequeue__(self, request: Request) -> None:
+        """
+        Called when a request is retrieved from the queue.
+        """
 
-            except asyncio.TimeoutError as error:
-                log.error(error)
-                try:
-                    await self.__disconnect__()
-                finally:
-                    # clear the connection event
-                    self._connection.clear()
+        # clear the playback event
+        self._playback_event.clear()
+        
+        log.debug(f"Beginning track '{request.metadata.title}'")
+        # set the current metadata
+        self._current = request.metadata
+        # return if client is unavailable
+        if self._client is None: return
+        # play the request
+        self._client.play(request.source, after=self.__on_complete__)
+        
+        # wait for the playback event to be set
+        await self._playback_event.wait()
+        log.debug(f"Finishing track '{request.metadata.title}'")
 
-            except Exception as error:
-                log.error(error)
-                try:
-                    await self.__disconnect__()
-                finally:
-                    # clear the connection event
-                    self._connection.clear()
 
-    
+    async def __on_error__(self, error: Exception) -> None:
+        """
+        Called when an error occurs while handling a request.
+        """
+
+        try:
+            log.error(error)
+            await self.__disconnect__()
+        finally:
+            # clear the connection event
+            self._connection.clear()
+
+
+    def __on_complete__(self, error: Optional[Exception]):
+        """
+        Called when a request completes in the audio loop.
+        """
+
+        # set the playback event
+        self._playback_event.set()
+        # log error if it was provided
+        if error: log.error(error)
+
+    #endregion
+
+
+    #region Voice Client Management
+
     async def __connect__(self, interaction: Interaction):
         """
         Connects the bot to the user's voice channel.
@@ -159,11 +178,11 @@ class Audio():
             state: Optional[discord.VoiceState] = interaction.user.voice  # type: ignore
             # if the user doesn't have a voice state, raise error
             if not state:
-                raise InvalidChannelError(None)
+                raise Audio.InvalidChannelError(None)
 
             # if the voice state does not reference a channel, raise error
             if not state.channel:
-                raise InvalidChannelError(state.channel)
+                raise Audio.InvalidChannelError(state.channel)
 
             # connect to the channel and get a voice client
             self._client = await state.channel.connect()
@@ -204,50 +223,18 @@ class Audio():
         finally:
             pass
 
-    
-    async def __query__(self, interaction: Interaction, query: str, *, downloader: Optional[youtube_dl.YoutubeDL] = None) -> Optional[Metadata]:
+
+    async def __skip__(self, interaction: Interaction) -> Optional[Metadata]:
         """
-        Searches for a query on YouTube and downloads the metadata.
-
-        Parameters:
-            - query: A string or URL to download metadata from YouTube
-            - downloader: YoutubeDL downloader instance
-        """
-        
-        # use provided downloader or initialize one if not provided
-        downloader = downloader if downloader else youtube_dl.YoutubeDL(DEFAULTS)
-        # extract info for the provided query
-        data: Optional[Dict[str, Any]] = downloader.extract_info(query, download=False)
-
-        # get the entries property, if it exists
-        entries: Optional[List[Any]] = data.get('entries') if data else None
-        # if the data contains a list of entries, use the list;
-        # otherwise create list from data (single entry)
-        results: List[Optional[Dict[str, Any]]] = entries if entries else [data]
-        # return the first available result
-        result: Optional[Dict[str, Any]] = results[0]
-
-        # return a Metadata object if result exists
-        return Metadata.__from_dict__(interaction, result) if result else None
-
-
-    async def __queue__(self, interaction: Interaction, metadata: Metadata, options: List[str] = list()) -> Request:
-        """
-        Adds metadata to the queue.
+        Skips the current track.
         """
 
-        # add the audio filter parameter to the options list
-        options.append(r'-vn')
-
-        # create source from metadata url and options
-        source: discord.AudioSource = discord.FFmpegOpusAudio(metadata.source, options=' '.join(options))
-        # create request from source and metadata
-        request: Request = Request(source, metadata)
-
-        # add the request to the queue
-        await self._playback_queue.put(request)
-        # return the request
-        return request
+        # store reference to the current metadata
+        skipped: Optional[Audio.Metadata] = self._current
+        # stop the voice client if available
+        if self._client: self._client.stop()
+        # return the skipped metadata
+        return skipped
 
 
     async def __pause__(self, interaction: Interaction) -> None:
@@ -258,19 +245,6 @@ class Audio():
         if self._client: self._client.pause()
         #
         return
-
-
-    async def __skip__(self, interaction: Interaction) -> Optional[Metadata]:
-        """
-        Skips the current track.
-        """
-
-        # store reference to the current metadata
-        skipped: Optional[Metadata] = self._current
-        # stop the voice client if available
-        if self._client: self._client.stop()
-        # return the skipped metadata
-        return skipped
 
     
     async def __stop__(self, interaction: Interaction) -> None:
@@ -284,6 +258,77 @@ class Audio():
         await self.__disconnect__()
         #
         return
+
+    #endregion
+
+
+    #region Business Logic
+
+    async def __query__(self, interaction: Interaction, query: str, *, downloader: Optional[youtube_dl.YoutubeDL] = None) -> Optional[Metadata]:
+        """
+        Searches for a query on YouTube and downloads the metadata.
+
+        Parameters:
+            - query: A string or URL to download metadata from YouTube
+            - downloader: YoutubeDL downloader instance
+        """
+        
+        # use provided downloader or initialize one if not provided
+        downloader = downloader if downloader else youtube_dl.YoutubeDL(Audio.DEFAULTS)
+        # extract info for the provided query
+        data: Optional[Dict[str, Any]] = downloader.extract_info(query, download=False)
+
+        # get the entries property, if it exists
+        entries: Optional[List[Any]] = data.get('entries') if data else None
+        # if the data contains a list of entries, use the list;
+        # otherwise create list from data (single entry)
+        results: List[Optional[Dict[str, Any]]] = entries if entries else [data]
+        # return the first available result
+        result: Optional[Dict[str, Any]] = results[0]
+
+        # return a Metadata object if result exists
+        return Audio.Metadata.__from_dict__(interaction, result) if result else None
+
+
+    async def __queue__(self, interaction: Interaction, metadata: Metadata, options: List[str] = list()) -> Request:
+        """
+        Adds metadata to the queue.
+        """
+
+        # add the audio filter parameter to the options list
+        options.append(r'-vn')
+
+        # create source from metadata url and options
+        source: discord.AudioSource = discord.FFmpegOpusAudio(metadata.source, options=' '.join(options))
+        # create request from source and metadata
+        request: Audio.Request = Audio.Request(source, metadata)
+
+        # add the request to the queue
+        await self._playback_queue.put(request)
+        # return the request
+        return request
+
+        
+    def __get_embed__(self, interaction: discord.Interaction, metadata: Metadata) -> discord.Embed:
+        user: Union[discord.User, discord.Member] = interaction.user
+
+        embed: discord.Embed = discord.Embed()
+
+        embed.set_author(name=user.display_name, icon_url=user.avatar.url if user.avatar else None)
+        embed.set_image(url=metadata.thumbnail)
+
+        embed.title =           metadata.title
+        embed.description =     metadata.channel
+        embed.url =             metadata.url
+        embed.timestamp =       interaction.created_at
+        embed.color =           discord.Colour.from_rgb(r=255, g=0, b=0)
+
+        return embed
+
+    #endregion
+
+
+    #region Application Commands
 
     @describe(query='The audio track to search for')
     @describe(speed='A numerical modifier to alter the audio speed by')
@@ -307,7 +352,7 @@ class Audio():
 
         try:
             # download metadata for the provided query
-            metadata: Optional[Metadata] = await self.__query__(interaction, f'ytsearch:{query}')
+            metadata: Optional[Audio.Metadata] = await self.__query__(interaction, f'ytsearch:{query}')
             if not metadata: raise Exception(f"No result found for '{query}'.")
 
             # get multiplier if speed was provided
@@ -318,7 +363,7 @@ class Audio():
             if multiplier and multiplier != 1.0: options.append(rf'-filter:a "atempo={multiplier}"')
 
             # queue the song and get the song's request data
-            request: Optional[Request] = await self.__queue__(interaction, metadata, options=options)
+            request: Optional[Audio.Request] = await self.__queue__(interaction, metadata, options=options)
 
             # generate an embed from the song request data
             embed: discord.Embed = self.__get_embed__(interaction, request.metadata)
@@ -339,247 +384,232 @@ class Audio():
         await interaction.response.defer(ephemeral=False, thinking=True)
 
         # skip the song and get the skipped song's metadata.
-        metadata: Optional[Metadata] = await self.__skip__(interaction)
+        metadata: Optional[Audio.Metadata] = await self.__skip__(interaction)
 
         # generate an embed from the song request data
         embed: Optional[discord.Embed] = self.__get_embed__(interaction, metadata) if metadata else None
         # send the embed
         await followup.send(f'Skipped {metadata.title if metadata else "Missing Title"}')
 
+    #endregion
+
+
+    #region Associated Classes
+
+    class Metadata():
+
+        @property
+        def id(self) -> int:
+            return self._id
+
+        @property
+        def user_id(self) -> int:
+            return self._user_id
+
+        @property
+        def video_id(self) -> str:
+            return self._video_id
+
+        @property
+        def title(self) -> str:
+            return self._title
+
+        @property
+        def channel(self) -> str:
+            return self._channel
+
+        @property
+        def thumbnail(self) -> str:
+            return self._thumbnail
+
+        @property
+        def source(self) -> str:
+            return self._source
+
+        @property
+        def url(self) -> str:
+            return self._url
+
+
+        def __init__(self, id: int, user_id: int, video_id: str, title: str, channel: str, thumbnail: str, url: str, video_url: str) -> None:
+            self._id: int = id
+            self._user_id: int = user_id
+            self._video_id: str = video_id
+            self._title: str = title
+            self._channel: str = channel
+            self._thumbnail: str = thumbnail
+            self._source: str = url
+            self._url: str = video_url
+
+        def __str__(self) -> str:
+            return f'[{self._video_id}] {self._title} ({self._url})'
+
+
+        @classmethod
+        def __from_dict__(cls, interaction: discord.Interaction, dict: Dict[str, Any]) -> Audio.Metadata:
+
+            id: int = interaction.id
+            user_id: int = interaction.user.id
+
+            video_id: str = dict['id']
+            if not isinstance(video_id, str): raise KeyError('id')
+
+            title: str = dict['title']
+            if not isinstance(title, str): raise KeyError('title')
+
+            channel: str = dict['channel']
+            if not isinstance(channel, str): raise KeyError('channel')
+
+            thumbnail: str = dict['thumbnail']
+            if not isinstance(channel, str): raise KeyError('thumbnail')
+
+            url: str = dict['url']
+            if not isinstance(url, str): raise KeyError('url')
+
+            video_url: str = dict['webpage_url']
+            if not isinstance(video_url, str): raise KeyError('video_url')
+
+            return Audio.Metadata(id, user_id, video_id, title, channel, thumbnail, url, video_url)
+
+        @classmethod
+        def __table__(cls) -> Table:
+            # create a table builder
+            t_builder: TableBuilder = TableBuilder()
+            # set the table's name
+            t_builder.setName('Metadata')
+
+            # create a column builder
+            c_builder: ColumnBuilder = ColumnBuilder()
+            # create timestamp column
+            t_builder.addColumn(c_builder.setName('ID').setType('INTEGER').isPrimary().isUnique().column())
+            # create user ID column
+            t_builder.addColumn(c_builder.setName('UserID').setType('INTEGER').column())
+            # create video ID column
+            t_builder.addColumn(c_builder.setName('VideoID').setType('TEXT').column())
+            # create title column
+            t_builder.addColumn(c_builder.setName('Title').setType('TEXT').column())
+            # create channel column
+            t_builder.addColumn(c_builder.setName('Channel').setType('TEXT').column())
+            # create channel column
+            t_builder.addColumn(c_builder.setName('Thumbnail').setType('TEXT').column())
+            # create url column
+            t_builder.addColumn(c_builder.setName('URL').setType('TEXT').column())
+
+            # build the table
+            table: Table = t_builder.table()
+            # return the table
+            return table
+
+        def __values__(self) -> Tuple[Any, ...]:
+            # create a tuple with the corresponding values
+            value: Tuple[Any, ...] = (self.id, self.user_id, self.video_id, self.title, self.channel, self.thumbnail, self.url)
+            # return the tuple
+            return value
+
+        @classmethod
+        def __from_row__(cls: Type[TStorable], row: Row) -> Audio.Metadata:
+            # Get ID value from the row
+            id: int = row['ID']
+            # Get UserID value from the row
+            user_id: int = row['UserID']
+            # Get VideoID value from the row
+            video_id: str = row['VideoID']
+            # Get URL value from the row
+            url: str = row['URL']
+            # Get Title value from the row
+            title: str = row['Title']
+            # Get Channel value from the row
+            channel: str = row['Channel']
+            # Get thumbnail value from the row
+            thumbnail: str = row['Thumbnail']
+            # Get thumbnail value from the row
+            video_url: str = row['VideoURL']
+            # return the Metadata
+            return Audio.Metadata(id, user_id, video_id, url, title, channel, thumbnail, video_url)
+
+
+    class Request():
+        """
+        A request object for the module to play
+        """
+
+        @property
+        def metadata(self) -> Audio.Metadata:
+            return self._metadata
+
+        @property
+        def source(self) -> AudioSource:
+            return self._source
+
+
+        def __init__(self, source: AudioSource, metadata: Audio.Metadata):
+            self._metadata: Audio.Metadata = metadata
+            self._source: AudioSource = source
+
+
+    class Logger():
+        def debug(self, message: str):
+            log.debug(message)
+
+        def warning(self, message: str):
+            log.warning(message)
+
+        def error(self, message: str):
+            log.error(message)
+
+    #endregion
+
+
+    #region Error Classes
+
+    class AudioError(Exception):
+        """
+        """
+
+        def __init__(self, message: str, exception: Optional[Exception] = None):
+            self._message = message
+            self._inner_exception = exception
+
+        def __str__(self) -> str:
+            return self._message
+
+
+    class NotConnectedError(AudioError):
+        """
+        """
+
+        def __init__(self, exception: Optional[Exception] = None):
+            message: str = f'The client is not connected to a compatible voice channel.'
+            super().__init__(message, exception)
+
+
+    class InvalidChannelError(AudioError):
+        """
+        """
+
+        def __init__(self, channel: Optional[discord.abc.GuildChannel], exception: Optional[Exception] = None):
+            reference: str = channel.mention if channel else 'unknown'
+            message: str = f'Cannot connect to {reference} channel'
+            super().__init__(message, exception)
     
-    def __get_embed__(self, interaction: discord.Interaction, metadata: Metadata) -> discord.Embed:
-        user: Union[discord.User, discord.Member] = interaction.user
-
-        embed: discord.Embed = discord.Embed()
-
-        embed.set_author(name=user.display_name, icon_url=user.avatar.url if user.avatar else None)
-        embed.set_image(url=metadata.thumbnail)
-
-        embed.title =           metadata.title
-        embed.description =     metadata.channel
-        embed.url =             metadata.url
-        embed.timestamp =       interaction.created_at
-        embed.color =           discord.Colour.from_rgb(r=255, g=0, b=0)
-
-        return embed
+    #endregion
 
 
-import logging
-from sqlite3 import Row
-from typing import Any, Dict, Optional, Tuple, Type
+    #region Constants
 
-import discord
-from bot.database.column import ColumnBuilder
-from bot.database.storable import TStorable
-from bot.database.table import Table, TableBuilder
-from discord import AudioSource
+    AUDIO_LOGGER: Audio.Logger = Logger()
 
+    DEFAULTS: Dict[str, Any] = {
+        'format': 'bestaudio/best',
+        'noplaylist': False,
+        'postprocessors': [
+            {
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'opus',
+            },
+        ],
+        'logger': AUDIO_LOGGER,
+        'progress_hooks': [ ],
+    }
 
-class Metadata():
-
-    def __init__(self, id: int, user_id: int, video_id: str, title: str, channel: str, thumbnail: str, url: str, video_url: str) -> None:
-        self._id: int = id
-        self._user_id: int = user_id
-        self._video_id: str = video_id
-        self._title: str = title
-        self._channel: str = channel
-        self._thumbnail: str = thumbnail
-        self._source: str = url
-        self._url: str = video_url
-
-    @property
-    def id(self) -> int:
-        return self._id
-
-    @property
-    def user_id(self) -> int:
-        return self._user_id
-
-    @property
-    def video_id(self) -> str:
-        return self._video_id
-
-    @property
-    def title(self) -> str:
-        return self._title
-    
-    @property
-    def channel(self) -> str:
-        return self._channel
-    
-    @property
-    def thumbnail(self) -> str:
-        return self._thumbnail
-
-    @property
-    def source(self) -> str:
-        return self._source
-
-    @property
-    def url(self) -> str:
-        return self._url
-
-        
-
-    @classmethod
-    def __from_dict__(cls, interaction: discord.Interaction, dict: Dict[str, Any]) -> Metadata:
-
-        id: int = interaction.id
-        user_id: int = interaction.user.id
-
-        video_id: str = dict['id']
-        if not isinstance(video_id, str): raise KeyError('id')
-
-        title: str = dict['title']
-        if not isinstance(title, str): raise KeyError('title')
-
-        channel: str = dict['channel']
-        if not isinstance(channel, str): raise KeyError('channel')
-
-        thumbnail: str = dict['thumbnail']
-        if not isinstance(channel, str): raise KeyError('thumbnail')
-
-        url: str = dict['url']
-        if not isinstance(url, str): raise KeyError('url')
-
-        video_url: str = dict['webpage_url']
-        if not isinstance(video_url, str): raise KeyError('video_url')
-
-        return Metadata(id, user_id, video_id, title, channel, thumbnail, url, video_url)
-
-
-    def __str__(self) -> str:
-        return f'[{self._video_id}] {self._title} ({self._url})'
-
-
-    @classmethod
-    def __table__(cls) -> Table:
-        # create a table builder
-        t_builder: TableBuilder = TableBuilder()
-        # set the table's name
-        t_builder.setName('Metadata')
-
-        # create a column builder
-        c_builder: ColumnBuilder = ColumnBuilder()
-        # create timestamp column
-        t_builder.addColumn(c_builder.setName('ID').setType('INTEGER').isPrimary().isUnique().column())
-        # create user ID column
-        t_builder.addColumn(c_builder.setName('UserID').setType('INTEGER').column())
-        # create video ID column
-        t_builder.addColumn(c_builder.setName('VideoID').setType('TEXT').column())
-        # create title column
-        t_builder.addColumn(c_builder.setName('Title').setType('TEXT').column())
-        # create channel column
-        t_builder.addColumn(c_builder.setName('Channel').setType('TEXT').column())
-        # create channel column
-        t_builder.addColumn(c_builder.setName('Thumbnail').setType('TEXT').column())
-        # create url column
-        t_builder.addColumn(c_builder.setName('URL').setType('TEXT').column())
-        
-        # build the table
-        table: Table = t_builder.table()
-        # return the table
-        return table
-
-    def __values__(self) -> Tuple[Any, ...]:
-        # create a tuple with the corresponding values
-        value: Tuple[Any, ...] = (self.id, self.user_id, self.video_id, self.title, self.channel, self.thumbnail, self.url)
-        # return the tuple
-        return value
-        
-    @classmethod
-    def __from_row__(cls: Type[TStorable], row: Row) -> Metadata:
-        # Get ID value from the row
-        id: int = row['ID']
-        # Get UserID value from the row
-        user_id: int = row['UserID']
-        # Get VideoID value from the row
-        video_id: str = row['VideoID']
-        # Get URL value from the row
-        url: str = row['URL']
-        # Get Title value from the row
-        title: str = row['Title']
-        # Get Channel value from the row
-        channel: str = row['Channel']
-        # Get thumbnail value from the row
-        thumbnail: str = row['Thumbnail']
-        # Get thumbnail value from the row
-        video_url: str = row['VideoURL']
-        # return the Metadata
-        return Metadata(id, user_id, video_id, url, title, channel, thumbnail, video_url)
-
-
-class Request():
-    """
-    A request object for the bot to play.
-    """
-
-    def __init__(self, source: AudioSource, metadata: Metadata):
-        self._metadata: Metadata = metadata
-        self._source: AudioSource = source
-    
-    @property
-    def metadata(self) -> Metadata:
-        return self._metadata
-
-    @property
-    def source(self) -> AudioSource:
-        return self._source
-
-
-class AudioLogger():
-    def debug(self, message: str):
-        log.debug(message)
-
-    def warning(self, message: str):
-        log.warning(message)
-        
-    def error(self, message: str):
-        log.error(message)
-
-
-class AudioError(Exception):
-    """
-    """
-
-    def __init__(self, message: str, exception: Optional[Exception] = None):
-        self._message = message
-        self._inner_exception = exception
-
-    def __str__(self) -> str:
-        return self._message
-
-
-class NotConnectedError(AudioError):
-    """
-    """
-
-    def __init__(self, exception: Optional[Exception] = None):
-        message: str = f'The client is not connected to a compatible voice channel.'
-        super().__init__(message, exception)
-
-
-class InvalidChannelError(AudioError):
-    """
-    """
-
-    def __init__(self, channel: Optional[discord.abc.GuildChannel], exception: Optional[Exception] = None):
-        reference: str = channel.mention if channel else 'unknown'
-        message: str = f'Cannot connect to {reference} channel'
-        super().__init__(message, exception)
-
-
-AUDIO_LOGGER: AudioLogger = AudioLogger()
-
-DEFAULTS: Dict[str, Any] = {
-    'format': 'bestaudio/best',
-    'noplaylist': False,
-    'postprocessors': [
-        {
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'opus',
-        },
-    ],
-    'logger': AUDIO_LOGGER,
-    'progress_hooks': [ ],
-}
+    #endregion

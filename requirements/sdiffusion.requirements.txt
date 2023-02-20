@@ -1,12 +1,17 @@
---find-links https://download.pytorch.org/whl/torch_stable.html
+git+https://github.com/natelatchaw/DiscordBot
 
+--pre
+--extra-index-url https://download.pytorch.org/whl/nightly/cu117
 torch
+torchvision
+torchaudio
+
 pytorch-lightning
 transformers
 einops
 omegaconf
 kornia
 
--e git+https://github.com/CompVis/stable-diffusion@main#egg=latent-diffusion
--e git+https://github.com/CompVis/taming-transformers.git@master#egg=taming-transformers
--e git+https://github.com/openai/CLIP.git@main#egg=clip
+--editable git+https://github.com/CompVis/stable-diffusion@main#egg=latent-diffusion
+--editable git+https://github.com/CompVis/taming-transformers.git@master#egg=taming-transformers
+--editable git+https://github.com/openai/CLIP.git@main#egg=clip

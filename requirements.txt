@@ -1,5 +1,5 @@
 git+https://github.com/natelatchaw/DiscordBot
 
 -r requirements/audio.requirements.txt
--r requirements/openai.requirements.txt
+-r requirements/openai_gen.requirements.txt
 -r requirements/sdiffusion.requirements.txt

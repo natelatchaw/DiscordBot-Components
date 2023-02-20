@@ -4,25 +4,28 @@ import asyncio
 import functools
 import importlib
 import logging
+from asyncio import Event, Queue
+from datetime import datetime
 from io import BytesIO
 from logging import Logger
 from pathlib import Path
 from random import Random
 from types import ModuleType
-from typing import Any, Dict, List, Literal, MutableMapping, Optional, Tuple
+from typing import (Any, Dict, List, Literal, Mapping, MutableMapping,
+                    Optional, Tuple, Union)
 
+import discord
 import einops
 import numpy
 import torch
 import transformers
 from bot.settings import Settings
 from bot.settings.section import SettingsSection
-from discord import File, Interaction
+from discord import Interaction, Member, User, Webhook
 from discord.app_commands import describe
 from ldm.models.diffusion.ddim import DDIMSampler
 from omegaconf import OmegaConf
 from PIL import Image
-from pytorch_lightning import seed_everything
 from torch import Size, Tensor, device
 from torch.nn import Module
 
@@ -31,6 +34,11 @@ transformers.logging.set_verbosity_error()
 
 
 class StableDiffusion:
+    """
+    Component responsible for managing Stable Diffusion image generation.
+    """
+
+    #region Properties
 
     @property
     def cpkt(self) -> Optional[Path]:
@@ -76,9 +84,37 @@ class StableDiffusion:
         # return the config value if available, otherwise return the fallback
         return value if value is not None else fallback
 
+    @property
+    def timeout(self) -> Optional[float]:
+        key: str = "timeout"
+        value: Optional[str] = None
+        try:
+            value = self._config[key]
+            return float(value) if value and isinstance(value, str) else None
+        except KeyError:
+            self._config[key] = ""
+            return None
+        except ValueError:
+            self._config[key] = ""
+            return None
+
+    @timeout.setter
+    def timeout(self, value: float) -> None:
+        key: str = "timeout"
+        if value: self._config[key] = str(value)
+
+    #endregion
+
+
+    #region Lifecycle Events
+
     def __init__(self, *args, **kwargs) -> None:
         """
         """
+        
+        self._activation: Event = Event()
+        self._generation_event: Event = Event()
+        self._generation_queue: Queue = Queue()
         
         try:
             self._settings: Settings = kwargs['settings']
@@ -100,16 +136,17 @@ class StableDiffusion:
         cpkt: Path = self.cpkt if self.cpkt else Path('./sd-v1-4.ckpt')
         pl_sd: Any = torch.load(cpkt, map_location='cpu')
         global_step: str = pl_sd['global_step']        
-        state_dict = pl_sd["state_dict"]
+        state_dict: Mapping[str, Any] = pl_sd["state_dict"]
 
         yaml: Path = self.yaml if self.yaml else Path('./v1-inference.yaml')
         config = OmegaConf.load(yaml.resolve())
-        self._model: Optional[Module] = await self.__get_model__(config)  # type: ignore
+        if not isinstance(config, MutableMapping): raise Exception(f'{self.yaml} contains an unexpected formatting.')
+        self._model: Optional[Module] = await self.__get_model__(config)
         if self._model is None: raise Exception(f'Failed to load model from {cpkt.name}')
 
-        m, u = self._model.load_state_dict(state_dict, strict=False)
-        if len(m) > 0 and verbose: print(f'missing keys: {m}')
-        if len(u) > 0 and verbose: print(f'unexpected keys: {u}')
+        missing_keys, unexpected_keys = self._model.load_state_dict(state_dict, strict=False)
+        if len(missing_keys) > 0 and verbose: log.warn(f'Missing keys: {missing_keys}')
+        if len(unexpected_keys) > 0 and verbose: log.warn(f'Unexpected keys: {unexpected_keys}')
 
         log.info(f"CUDA {'is' if torch.cuda.is_available() else 'is not'} available.")
         log.info(f"Using {self.device_id} device.")
@@ -120,66 +157,151 @@ class StableDiffusion:
         except RuntimeError as error:
             log.warn(error)
 
+        # begin loop
+        await self.__start__()
 
-    @describe(prompt='Text describing what should be generated in the image')
-    @describe(preset='The quality preset to use when generating the image')
-    @describe(steps='The number of times to iterate over the diffusion process.')
-    async def generate(self, interaction: Interaction, prompt: str, preset: Literal['low', 'medium', 'high'], steps: int = 50) -> None:
-        """Generate an image given a prompt and an inference parameter preset"""
-        
-        await interaction.response.defer()
+    #endregion
+
+
+    #region Core Loop Events
+
+    async def __start__(self):
+        """
+        The core image generation loop.
+        This is used internally and should not be called as a command.
+        """
+
+        while True:
+            try:
+                # wait for the activation event to be set
+                await self._activation.wait()
+
+                # if the model is not available
+                if self._model is None:
+                    # clear the activation event
+                    self._activation.clear()
+                    log.debug('Resetting; no model available')
+                    # restart the loop
+                    continue                
+
+                log.debug('Waiting for next image generation request')
+                # wait for the generation queue to return a request, or throw TimeoutError
+                request: StableDiffusion.Request = await asyncio.wait_for(self._generation_queue.get(), self.timeout)
+
+                # call dequeue hook logic
+                await self.__on_dequeue__(request)
+
+            except (asyncio.TimeoutError, Exception) as error:
+                await self.__on_error__(error)
+
+
+    async def __on_dequeue__(self, request: Request) -> None:
+        """
+        Called when a request is retrieved from the queue.
+        """
+
+        # clear the generation event
+        self._generation_event.clear()
+        log.debug(f"Beginning generation '{request.prompt}'")
+
+        # generate image data given the provided prompt, preset, and steps values
+        bytes: BytesIO = await self.__generate__(request.prompt, request.preset, request.steps)                
+
+        # generate an embed given the request and image data
+        data: Tuple[discord.Embed, discord.File] = self.__get_embed__(request, bytes)
+        # send the embed and image data via webhook
+        await request.webhook.send(embed=data[0], file=data[1])
+
+        # wait for the generation event to be set
+        await self._generation_event.wait()
+        log.debug(f"Finishing generation '{request.prompt}'")
+
+
+    async def __on_error__(self, error: Exception) -> None:
+        """
+        Called when an error occurs while handling a request.
+        """
 
         try:
-            seed: int = Random().randint(0, 99999)
-            settings: StableDiffusion.Settings = StableDiffusion.Presets.medium(seed)
-            if preset == 'low':
-                settings = StableDiffusion.Presets.low(seed)
-            if preset == 'medium':
-                settings = StableDiffusion.Presets.medium(seed)
-            if preset == 'high':
-                settings = StableDiffusion.Presets.high(seed)
+            log.error(error)
+            pass
+        finally:
+            # clear the activation event
+            self._activation.clear()
 
-            seed_everything(settings.seed)
+    #endregion
 
-            if not self._model: raise Exception('Model acquisition failed.')
 
-            sampler: DDIMSampler = DDIMSampler(self._model)
+    #region Model Manipulation
 
-            loop = asyncio.get_event_loop()
-            func = functools.partial(self.__infer__, prompt, settings, sampler, steps)
-            images: List[Image.Image] = await loop.run_in_executor(None, func)
-            image: Image.Image = images[0]
-            if not image: raise Exception('Image generation failed.')
+    async def __get_model__(self, config: MutableMapping[Any, Any]) -> Optional[Module]:
+        """
+        Reads model configuration from provided config mapping and initializes
+        the module.
+        """
 
-            output_binary: BytesIO = BytesIO()
-            extension: str = 'PNG'
-            image.save(output_binary, extension)
-            output_binary.seek(0)
-            file: File = File(fp=output_binary, filename=f'output.{extension}')
-            await interaction.followup.send(file=file)
+        # get the model metadata dictionary
+        model_data: Dict[str, Any] = config.get('model', dict())
 
-        except Exception as error:
-            await interaction.followup.send(f'{error}')
-            raise
+        # get the model's class name from the model metadata
+        target: Optional[str] = model_data.get('target')
+        # return None if target is invalid
+        if not target or not isinstance(target, str): return None
+        # get the module name and class name by splitting the target name
+        module_name, class_name = target.rsplit('.', 1)
+        # import the module by name
+        module: ModuleType = importlib.import_module(module_name, package=None)
+        # get the model's class object via the class name
+        model: Any = getattr(module, class_name)
+
+        # get model parameters from the model data
+        params: Dict[Any, Any] = model_data.get('params', dict())
+        # inject the device's ID into model configuration
+        params = self.__inject_device_id__(params, self.device)
+
+        # initialize the model using the given parameters
+        return model(**params)
+    
+    
+    def __inject_device_id__(self, params: Dict[Any, Any], device: device) -> Dict[Any, Any]:
+        """
+        Injects the supplied device's ID into the model configuration.
+
+        Device ID field is located at `cond_stage_config.params.device` within
+        the configuration.
+        """
+
+        # get the conditioning stage configuration
+        cond_stage_config: Dict = params.get('cond_stage_config', dict())
+        # get the conditioning stage configuration parameters
+        cond_stage_config_params: Dict = cond_stage_config.get('params', dict())
+        # set the conditioning stage configuration parameters device setting
+        cond_stage_config_params['device'] = self.device_id
+        # set the params section to the altered configuration parameters
+        cond_stage_config['params'] = cond_stage_config_params
+        # set the config section to the altered configuration
+        params['cond_stage_config'] = cond_stage_config
+        
+        # return the altered params
+        return params
 
 
     @torch.no_grad()
-    #@torch.autocast(DEVICE_TYPE)
-    def __infer__(self, prompt: str, settings: StableDiffusion.Settings, sampler: DDIMSampler, sampling_steps: int = 50) -> List[Image.Image]:
+    def __infer__(self, prompt: str, parameters: StableDiffusion.Parameters, sampler: DDIMSampler, sampling_steps: int = 50) -> List[Image.Image]:
 
         with self._model.ema_scope():  # type: ignore
-            start_code: Tensor = torch.randn(settings.size, device=self.device)
-            u = self._model.get_learned_conditioning(settings.batch_size * [""])  # type: ignore
-            c = self._model.get_learned_conditioning(settings.batch_size * [prompt])  # type: ignore
+            start_code: Tensor = torch.randn(parameters.size, device=self.device)
+            u = self._model.get_learned_conditioning(parameters.batch_size * [""])  # type: ignore
+            c = self._model.get_learned_conditioning(parameters.batch_size * [prompt])  # type: ignore
             ddim_samples, ddim_intermediates = sampler.sample(
                 S=sampling_steps,
                 x_T=start_code,
                 conditioning=c,
                 unconditional_conditioning=u,
-                batch_size=settings.batch_size,
-                shape=settings.shape,
-                unconditional_guidance_scale=settings.scale,
-                eta=settings.eta,
+                batch_size=parameters.batch_size,
+                shape=parameters.shape,
+                unconditional_guidance_scale=parameters.scale,
+                eta=parameters.eta,
                 verbose=False,
             )
 
@@ -194,38 +316,91 @@ class StableDiffusion:
                 outputs.append(output)
 
             return outputs
-
-
-    async def __get_model__(self, config: MutableMapping[Any, Any]) -> Optional[Module]:
         
-        # get the model metadata dictionary
-        model_data: Dict[str, Any] = config.get('model', dict())
-        # get the model's class name from the model metadata
-        target: Optional[str] = model_data.get('target')
-        # return None if no target is defined
-        if target is None: return None
-        # get the module name and class name by splitting the target name
-        module_name, class_name = target.rsplit('.', 1)
-        # import the module by name
-        module: ModuleType = importlib.import_module(module_name, package=None)
-        # get the model's class object via the class name
-        model: Any = getattr(module, class_name)
-        # get model parameters from the model data
-        params: Dict = model_data.get('params', dict())
-
-        # get the conditioning stage config section
-        params['cond_stage_config']: Dict = params.get('cond_stage_config', dict())
-        # get the conditioning stage parameters config section
-        params['cond_stage_config']['params']: Dict = params['cond_stage_config'].get('params', dict())
-        # set the device id
-        params['cond_stage_config']['params']['device']: str = self.device_id
-
-        # instantiate the model using the given parameters
-        return model(**params)
+    #endregion
 
 
+    #region Business Logic
 
-    class Settings:
+    async def __generate__(self, prompt: str, preset: Literal['low', 'medium', 'high'], steps: int = 50) -> BytesIO:
+        """
+        Generate an image given a prompt and an inference parameter preset.
+        """
+        
+        try:
+            seed: int = Random().randint(0, 99999)
+            parameters: StableDiffusion.Parameters = StableDiffusion.Presets.medium(seed)
+            if preset == 'low':
+                parameters = StableDiffusion.Presets.low(seed)
+            if preset == 'medium':
+                parameters = StableDiffusion.Presets.medium(seed)
+            if preset == 'high':
+                parameters = StableDiffusion.Presets.high(seed)
+
+            if not self._model: raise Exception('Model acquisition failed.')
+
+            sampler: DDIMSampler = DDIMSampler(self._model)
+
+            loop = asyncio.get_event_loop()
+            func = functools.partial(self.__infer__, prompt, parameters, sampler, steps)
+            images: List[Image.Image] = await loop.run_in_executor(None, func)
+            image: Image.Image = images[0]
+            if not image: raise Exception('Image generation failed.')
+
+            binary: BytesIO = BytesIO()
+            format: Literal['bmp', 'png'] = 'png'
+            image.save(binary, bitmap_format=format)
+            binary.seek(0)
+            return binary
+
+        except Exception as error:
+            raise
+
+    
+    def __get_embed__(self, request: StableDiffusion.Request, binary: BytesIO) -> Tuple[discord.Embed, discord.File]:
+        user: Union[discord.User, discord.Member] = request.user
+
+        embed: discord.Embed = discord.Embed()
+
+        embed.set_author(name=user.display_name, icon_url=user.avatar.url if user.avatar else None)
+
+        embed.title =           "Stable Diffusion"
+        embed.description =     request.prompt
+        embed.timestamp =       request.timestamp
+        embed.color =           discord.Colour.from_rgb(r=0, g=0, b=0)
+
+        
+
+        filename: str = '.'.join(['image', 'png'])
+        image: discord.File = discord.File(fp=binary, filename=filename)
+        embed.set_image(url=f'attachment://{filename}')
+
+        return embed, image
+    
+    #endregion
+
+
+    #region Application Commands
+
+    @describe(prompt='Text describing what should be generated in the image')
+    @describe(preset='The quality preset to use when generating the image')
+    @describe(steps='The number of times to iterate over the diffusion process.')
+    async def generate(self, interaction: Interaction, prompt: str, preset: Literal['low', 'medium', 'high'], steps: int = 50) -> None:
+        """Generate an image given a prompt and an inference parameter preset"""
+        
+        await interaction.response.defer()
+
+        request: StableDiffusion.Request = StableDiffusion.Request(prompt, preset, steps, interaction.user, interaction.followup, interaction.created_at)
+        await self._generation_queue.put(request)
+
+        await interaction.followup.send(f"Your prompt has been queued for generation.")
+
+    #endregion
+
+
+    #region Associated Classes
+
+    class Parameters:
 
         def __init__(self, *, dimensions: Tuple[int, int], downsampling: int, batch_size: int, scale: float, channels: int, eta: float, seed: int):
             self._height: int = dimensions[0]
@@ -278,10 +453,13 @@ class StableDiffusion:
 
 
     class Presets:
+        """
+        Defines presets for `StableDiffusion.Settings`
+        """
 
         @staticmethod
-        def low(seed: int) -> StableDiffusion.Settings:
-            return StableDiffusion.Settings(
+        def low(seed: int) -> StableDiffusion.Parameters:
+            return StableDiffusion.Parameters(
                 dimensions=(256, 256),
                 downsampling=8,
                 batch_size=1,
@@ -292,8 +470,8 @@ class StableDiffusion:
             )
 
         @staticmethod
-        def medium(seed: int) -> StableDiffusion.Settings:
-            return StableDiffusion.Settings(
+        def medium(seed: int) -> StableDiffusion.Parameters:
+            return StableDiffusion.Parameters(
                 dimensions=(384, 384),
                 downsampling=8,
                 batch_size=1,
@@ -304,8 +482,8 @@ class StableDiffusion:
             )
 
         @staticmethod
-        def high(seed: int) -> StableDiffusion.Settings:
-            return StableDiffusion.Settings(
+        def high(seed: int) -> StableDiffusion.Parameters:
+            return StableDiffusion.Parameters(
                 dimensions=(512, 512),
                 downsampling=8,
                 batch_size=1,
@@ -314,4 +492,43 @@ class StableDiffusion:
                 eta=0.85,
                 seed=seed
             )
+        
 
+    class Request():
+        """
+        A request object for the module to generate
+        """
+    
+        def __init__(self, prompt: str, preset: Literal['low', 'medium', 'high'], steps: int, user: Union[User, Member], webhook: Webhook, timestamp: datetime):
+            self._prompt: str = prompt
+            self._preset: Literal['low', 'medium', 'high'] = preset
+            self._steps: int = steps
+            self._user: Union[User, Member] = user
+            self._webhook: Webhook = webhook
+            self._timestamp: datetime = timestamp
+    
+        @property
+        def prompt(self) -> str:
+            return self._prompt
+    
+        @property
+        def preset(self) -> Literal['low', 'medium', 'high']:
+            return self._preset
+    
+        @property
+        def steps(self) -> int:
+            return self._steps
+        
+        @property
+        def user(self) -> Union[User, Member]:
+            return self._user
+        
+        @property
+        def webhook(self) -> Webhook:
+            return self._webhook
+        
+        @property
+        def timestamp(self) -> datetime:
+            return self._timestamp
+        
+    #endregion

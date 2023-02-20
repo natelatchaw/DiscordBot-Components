@@ -26,29 +26,13 @@ from openai.openai_object import OpenAIObject
 
 log: Logger = logging.getLogger(__name__)
 
-MAX_MESSAGE_SIZE: Literal[2000] = 2000
-"""
-The maximum amount of characters
-permitted in a Discord message
-"""
-
-# define model costs
-MODEL_COSTS: Dict[str, float] = {
-    'text-davinci-003': 0.0600 / 1000,
-    'text-davinci-002': 0.0600 / 1000,
-    'text-curie-001':   0.0060 / 1000,
-    'text-babbage-001': 0.0012 / 1000,
-    'text-ada-001':     0.0008 / 1000,
-    'image-1024x1024':  0.0200 / 1,
-    'image-512x512':    0.0180 / 1,
-    'image-256x256':    0.0160 / 1,
-}
-
 class OpenAI():
     """
     A collection of commands used to prompt the OpenAI GPT-3 AI models.
     AI model usage is tracked and can be calculated via the 'cost' command.
     """
+
+    #region Properties
 
     @property
     def key(self) -> Optional[str]:
@@ -81,6 +65,10 @@ class OpenAI():
         key: str = "enabled"
         self._config[key] = str(value)
 
+    #endregion
+
+
+    #region Lifecycle Events
 
     def __init__(self, *args, **kwargs) -> None:
         """
@@ -104,7 +92,44 @@ class OpenAI():
         # create database instance
         self._database: Database = Database(Path('./data/openai.db'))
 
+    #endregion
 
+
+    #region Database Management
+
+    async def __store__(self, interaction: Interaction, *, submission: Submission) -> None:
+        # create the database
+        self._database.create(OpenAI.Submission)
+        # insert the submission
+        self._database.insert(submission)
+
+
+    async def __load__(self, interaction: Interaction) -> List[Submission]:
+        # create the database
+        self._database.create(OpenAI.Submission)
+        # get all submissions
+        submissions: List[OpenAI.Submission] = [OpenAI.Submission.__from_row__(row) for row in self._database.select(OpenAI.Submission)]
+        # return submissions
+        return submissions
+    
+    #endregion
+
+
+    #region Business Logic
+
+    async def __get_cost__(self, submission: Submission, costs: Dict[str, float]) -> float:
+        try:
+            # retrieve the cost per token for the model used by the submission
+            cost_per_token: float = costs[submission.model]
+            # calculate the total cost
+            total_cost: float = submission.rate * submission.count
+            # return the cost
+            return total_cost
+        except KeyError as error:
+            log.warning(f'No cost defined for model {error}')
+            return float(0)
+        
+        
     async def __send_completion__(self, interaction: Interaction, prompt: str, model: str = 'text-davinci-003', tokens: Union[int, str] = 128, echo: bool = False) -> List[str]:
         # check enabled configuration parameter
         if not self.is_enabled: raise ValueError('This command has been disabled.')
@@ -123,9 +148,9 @@ class OpenAI():
         responses: List[str] = [choice.text for choice in choices]
 
         # get rate for the selected model
-        rate: float = MODEL_COSTS[model]
+        rate: float = OpenAI.MODEL_COSTS[model]
         # create submission object
-        submission: Submission = TextSubmission(interaction.id, user.id, rate, model, prompt, '\n'.join(responses))
+        submission: OpenAI.Submission = OpenAI.TextSubmission(interaction.id, user.id, rate, model, prompt, '\n'.join(responses))
         # store the submission
         await self.__store__(interaction, submission=submission)
 
@@ -151,30 +176,14 @@ class OpenAI():
         responses: List[str] = [image['url'] for image in images]
 
         # get rate for the selected model
-        rate: float = MODEL_COSTS[f'image-{size}']
+        rate: float = OpenAI.MODEL_COSTS[f'image-{size}']
         # create submission object
-        submission: Submission = ImageSubmission(interaction.id, user.id, rate, count, size)
+        submission: OpenAI.Submission = OpenAI.ImageSubmission(interaction.id, user.id, rate, count, size)
         # store the submission
         await self.__store__(interaction, submission=submission)
 
         return responses
-
-
-    async def __store__(self, interaction: Interaction, *, submission: Submission) -> None:
-        # create the database
-        self._database.create(Submission)
-        # insert the submission
-        self._database.insert(submission)
-
-
-    async def __load__(self, interaction: Interaction) -> List[Submission]:
-        # create the database
-        self._database.create(Submission)
-        # get all submissions
-        submissions: List[Submission] = [Submission.__from_row__(row) for row in self._database.select(Submission)]
-        # return submissions
-        return submissions
-
+        
     
     async def __print__(self, interaction: Interaction, *, responses: List[str], block_tag: str = '```'):
         # for each returned response
@@ -188,19 +197,10 @@ class OpenAI():
                 # send the segment as a followup message
                 await interaction.followup.send(f'{block_tag}\n{segment}\n{block_tag}')
 
+    #endregion
 
-    async def __get_cost__(self, submission: Submission, costs: Dict[str, float]) -> float:
-        try:
-            # retrieve the cost per token for the model used by the submission
-            cost_per_token: float = costs[submission.model]
-            # calculate the total cost
-            total_cost: float = submission.rate * submission.count
-            # return the cost
-            return total_cost
-        except KeyError as error:
-            log.warning(f'No cost defined for model {error}')
-            return float(0)
 
+    #region Application Commands
 
     async def cost(self, interaction: Interaction) -> None:
         """
@@ -211,7 +211,7 @@ class OpenAI():
         await interaction.response.defer(thinking=True)
 
         # load all submissions
-        submissions: List[Submission] = await self.__load__(interaction)
+        submissions: List[OpenAI.Submission] = await self.__load__(interaction)
         # get the message's author
         author: Union[User, Member] = interaction.user
         # get the target users
@@ -223,7 +223,7 @@ class OpenAI():
             submissions = [submission for submission in submissions if submission.user_id == user.id]
 
             # initialize a dictionary
-            per_model: Dict[str, List[Submission]] = dict()
+            per_model: Dict[str, List[OpenAI.Submission]] = dict()
             # for each submission
             for submission in submissions:
                 # if the per_model dictionary does not have the model as a key
@@ -241,7 +241,7 @@ class OpenAI():
             # for each entry in per_model
             for model, model_submissions in per_model.items():
                 # calculate the cost for each submission
-                costs: List[float] = [await self.__get_cost__(submission, MODEL_COSTS) for submission in model_submissions]
+                costs: List[float] = [await self.__get_cost__(submission, OpenAI.MODEL_COSTS) for submission in model_submissions]
                 # add the cost data to the embed
                 embed.add_field(name=model, value=f'${sum(costs):0.2f} ({len(costs)} submission{"s" if len(costs) != 1 else ""})')
 
@@ -375,170 +375,201 @@ class OpenAI():
         except Exception as error:
             await interaction.followup.send(f'{error}')
 
-class Submission(Storable):
-    
-    def __init__(self, id: int, user_id: int, rate: float, count: int, model: str) -> None:
-        self._id: int = id
-        self._user_id: int = user_id
-        self._rate: float = rate
-        self._count: int = count
-        self._model: str = model
+    #endregion
 
-    @property
-    def id(self) -> int:
-        return self._id
 
-    @property
-    def user_id(self) -> int:
-        return self._user_id
+    #region Associated Classes
 
-    @property
-    def rate(self) -> float:
-        return self._rate
+    class Submission(Storable):
 
-    @property
-    def count(self) -> int:
-        return self._count
+        def __init__(self, id: int, user_id: int, rate: float, count: int, model: str) -> None:
+            self._id: int = id
+            self._user_id: int = user_id
+            self._rate: float = rate
+            self._count: int = count
+            self._model: str = model
 
-    @property
-    def model(self) -> str:
-        return self._model
+        @property
+        def id(self) -> int:
+            return self._id
 
-    @classmethod
-    def __table__(self) -> Table:
-        # create a table builder
-        t_builder: TableBuilder = TableBuilder()
-        # set the table's name
-        t_builder.setName('Submissions')
+        @property
+        def user_id(self) -> int:
+            return self._user_id
 
-        # create a column builder
-        c_builder: ColumnBuilder = ColumnBuilder()
-        # create id column
-        t_builder.addColumn(c_builder.setName('ID').setType('INTEGER').isPrimary().isUnique().column())
-        # create user ID column
-        t_builder.addColumn(c_builder.setName('UserID').setType('INTEGER').column())
-        # create rate column
-        t_builder.addColumn(c_builder.setName('Rate').setType('REAL').column())
-        # create count column
-        t_builder.addColumn(c_builder.setName('Count').setType('INTEGER').column())
-        # create model column
-        t_builder.addColumn(c_builder.setName('Model').setType('TEXT').column())
+        @property
+        def rate(self) -> float:
+            return self._rate
+
+        @property
+        def count(self) -> int:
+            return self._count
+
+        @property
+        def model(self) -> str:
+            return self._model
+
+        @classmethod
+        def __table__(cls) -> Table:
+            # create a table builder
+            t_builder: TableBuilder = TableBuilder()
+            # set the table's name
+            t_builder.setName('Submissions')
+
+            # create a column builder
+            c_builder: ColumnBuilder = ColumnBuilder()
+            # create id column
+            t_builder.addColumn(c_builder.setName('ID').setType('INTEGER').isPrimary().isUnique().column())
+            # create user ID column
+            t_builder.addColumn(c_builder.setName('UserID').setType('INTEGER').column())
+            # create rate column
+            t_builder.addColumn(c_builder.setName('Rate').setType('REAL').column())
+            # create count column
+            t_builder.addColumn(c_builder.setName('Count').setType('INTEGER').column())
+            # create model column
+            t_builder.addColumn(c_builder.setName('Model').setType('TEXT').column())
+
+            # build the table
+            table: Table = t_builder.table()
+            # return the table
+            return table
+
+        def __values__(self) -> Tuple[Any, ...]:
+            # create a tuple with the corresponding values
+            value: Tuple[Any, ...] = (self.id, self.user_id, self.rate, self.count, self.model)
+            # return the tuple
+            return value
+
+        @classmethod
+        def __from_row__(cls: Type[OpenAI.Submission], row: Row) -> OpenAI.Submission:
+            # get ID value from the row
+            id: int = row['ID']
+            # get UserID value from the row
+            user_id: int = row['UserID']
+            # get Rate value from the row
+            rate: float = row['Rate']
+            # get Count value from the row
+            count: int = row['Count']
+            # get Model value from the row
+            model: str = row['Model']
+            # return the Submission
+            return OpenAI.Submission(id, user_id, rate, count, model)
+
+
+    class ImageSubmission(Submission):
+
+        def __init__(self, id: int, user_id: int, rate: float, count: int, size: str) -> None:
+            self._id: int = id
+            self._user_id: int = user_id
+            self._rate: float = rate
+            self._count: int = count
+            self._model: str = f'image-{size}'
+
+            super().__init__(self._id, self._user_id, self._rate, self._count, self._model)
+
+        @property
+        def id(self) -> int:
+            return self._id
+
+        @property
+        def user_id(self) -> int:
+            return self._user_id
+
+        @property
+        def rate(self) -> float:
+            return self._rate
+
+        @property
+        def count(self) -> int:
+            return self._count
+
+        @property
+        def model(self) -> str:
+            return self._model
+
+
+
+    class TextSubmission(Submission):
+
+        def __init__(self, id: int, user_id: int, rate: float, prompt: str, response: str, model: str) -> None:
+            self._id: int = id
+            self._user_id: int = user_id
+            self._rate: float = rate
+
+            self._prompt: str = prompt
+            self._response: str = response
+
+            self._count: int = self.__get_tokens__()
+            self._model: str = model 
+
+            super().__init__(self._id, self._user_id, self._rate, self._count, self._model)
+
+        @property
+        def id(self) -> int:
+            return self._id
+
+        @property
+        def user_id(self) -> int:
+            return self._user_id
+
+        @property
+        def rate(self) -> float:
+            return self._rate
+
+        @property
+        def count(self) -> int:
+            return self._count
+
+        @property
+        def model(self) -> str:
+            return self._model
+
+
+        @property
+        def prompt(self) -> str:
+            return self._prompt
+
+        @property
+        def response(self) -> str:
+            return self._response
+
+
+        def __get_tokens__(self) -> int:
+            # split the prompt by whitespace characters
+            prompt_segments: List[str] = re.split(r"[\s]+", self._prompt)
+            # get a token count for each word
+            prompt_token_counts: List[int] = [ceil(len(prompt_segment) / 4) for prompt_segment in prompt_segments]
+
+            # split the response by whitespace characters
+            response_segments: List[str] = re.split(r"[\s]+", self._prompt)
+            # get a token count for each word
+            response_token_counts: List[int] = [ceil(len(response_segment) / 4) for response_segment in response_segments]
+
+            # return the sum of token counts
+            return sum(prompt_token_counts) + sum(response_token_counts)
         
-        # build the table
-        table: Table = t_builder.table()
-        # return the table
-        return table
-
-    def __values__(self) -> Tuple[Any, ...]:
-        # create a tuple with the corresponding values
-        value: Tuple[Any, ...] = (self.id, self.user_id, self.rate, self.count, self.model)
-        # return the tuple
-        return value
-        
-    @classmethod
-    def __from_row__(cls: Type[Submission], row: Row) -> Submission:
-        # get ID value from the row
-        id: int = row['ID']
-        # get UserID value from the row
-        user_id: int = row['UserID']
-        # get Rate value from the row
-        rate: float = row['Rate']
-        # get Count value from the row
-        count: int = row['Count']
-        # get Model value from the row
-        model: str = row['Model']
-        # return the Submission
-        return Submission(id, user_id, rate, count, model)
+    #endregion
 
 
-class ImageSubmission(Submission):
+    #region Constants
 
-    def __init__(self, id: int, user_id: int, rate: float, count: int, size: str) -> None:
-        self._id: int = id
-        self._user_id: int = user_id
-        self._rate: float = rate
-        self._count: int = count
-        self._model: str = f'image-{size}'
+    # define model costs
+    MODEL_COSTS: Dict[str, float] = {
+        'text-davinci-003': 0.0600 / 1000,
+        'text-davinci-002': 0.0600 / 1000,
+        'text-curie-001':   0.0060 / 1000,
+        'text-babbage-001': 0.0012 / 1000,
+        'text-ada-001':     0.0008 / 1000,
+        'image-1024x1024':  0.0200 / 1,
+        'image-512x512':    0.0180 / 1,
+        'image-256x256':    0.0160 / 1,
+    }
 
-        super().__init__(self._id, self._user_id, self._rate, self._count, self._model)
-
-    @property
-    def id(self) -> int:
-        return self._id
-
-    @property
-    def user_id(self) -> int:
-        return self._user_id
-
-    @property
-    def rate(self) -> float:
-        return self._rate
-    
-    @property
-    def count(self) -> int:
-        return self._count
-
-    @property
-    def model(self) -> str:
-        return self._model
-
-
-
-class TextSubmission(Submission):
-
-    def __init__(self, id: int, user_id: int, rate: float, prompt: str, response: str, model: str) -> None:
-        self._id: int = id
-        self._user_id: int = user_id
-        self._rate: float = rate
-
-        self._prompt: str = prompt
-        self._response: str = response
-        
-        self._count: int = self.__get_tokens__()
-        self._model: str = model 
-
-        super().__init__(self._id, self._user_id, self._rate, self._count, self._model)
-
-    @property
-    def id(self) -> int:
-        return self._id
-
-    @property
-    def user_id(self) -> int:
-        return self._user_id
-
-    @property
-    def rate(self) -> float:
-        return self._rate
-    
-    @property
-    def count(self) -> int:
-        return self._count
-
-    @property
-    def model(self) -> str:
-        return self._model
+    #endregion
     
 
-    @property
-    def prompt(self) -> str:
-        return self._prompt
-
-    @property
-    def response(self) -> str:
-        return self._response
-
-
-    def __get_tokens__(self) -> int:
-        # split the prompt by whitespace characters
-        prompt_segments: List[str] = re.split(r"[\s]+", self._prompt)
-        # get a token count for each word
-        prompt_token_counts: List[int] = [ceil(len(prompt_segment) / 4) for prompt_segment in prompt_segments]
-
-        # split the response by whitespace characters
-        response_segments: List[str] = re.split(r"[\s]+", self._prompt)
-        # get a token count for each word
-        response_token_counts: List[int] = [ceil(len(response_segment) / 4) for response_segment in response_segments]
-
-        # return the sum of token counts
-        return sum(prompt_token_counts) + sum(response_token_counts)
+MAX_MESSAGE_SIZE: Literal[2000] = 2000
+"""
+The maximum amount of characters
+permitted in a Discord message
+"""

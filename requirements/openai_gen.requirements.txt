@@ -1,5 +1,3 @@
 git+https://github.com/natelatchaw/DiscordBot
 
-discord.py[voice]
-youtube-dl
-yt-dlp
+openai
