@@ -114,48 +114,27 @@ class StableDiffusion:
         
         self._activation: Event = Event()
         self._generation_event: Event = Event()
-        self._generation_queue: Queue = Queue()
+        self._generation_queue: Queue[StableDiffusion.Request] = Queue()
+        self._model: Optional[Module] = None
         
         try:
             self._settings: Settings = kwargs['settings']
         except KeyError as error:
             raise Exception(f'Key {error} was not found in provided kwargs')
+        
+
+    async def __setup__(self):
+        """
+        Called after instance properties are initialized.
+        """
 
         # create a config section for this component
         self._settings.client[self.__class__.__name__] = SettingsSection(self.__class__.__name__, self._settings.client._parser, self._settings.client._reference)
         # create reference to this component's config section
         self._config: SettingsSection = self._settings.client[self.__class__.__name__]  # type: ignore
 
-        #
+        # sets the device to the device matching the device ID in configuration
         self.device: device = torch.device(self.device_id)
-
-
-    async def __setup__(self):
-        verbose: bool = False
-
-        cpkt: Path = self.cpkt if self.cpkt else Path('./sd-v1-4.ckpt')
-        pl_sd: Any = torch.load(cpkt, map_location='cpu')
-        global_step: str = pl_sd['global_step']        
-        state_dict: Mapping[str, Any] = pl_sd["state_dict"]
-
-        yaml: Path = self.yaml if self.yaml else Path('./v1-inference.yaml')
-        config = OmegaConf.load(yaml.resolve())
-        if not isinstance(config, MutableMapping): raise Exception(f'{self.yaml} contains an unexpected formatting.')
-        self._model: Optional[Module] = await self.__get_model__(config)
-        if self._model is None: raise Exception(f'Failed to load model from {cpkt.name}')
-
-        missing_keys, unexpected_keys = self._model.load_state_dict(state_dict, strict=False)
-        if len(missing_keys) > 0 and verbose: log.warn(f'Missing keys: {missing_keys}')
-        if len(unexpected_keys) > 0 and verbose: log.warn(f'Unexpected keys: {unexpected_keys}')
-
-        log.info(f"CUDA {'is' if torch.cuda.is_available() else 'is not'} available.")
-        log.info(f"Using {self.device_id} device.")
-    
-        try:
-            self._model.eval()        
-            self._model.to(self.device)
-        except RuntimeError as error:
-            log.warn(error)
 
         # begin loop
         await self.__start__()
@@ -212,6 +191,9 @@ class StableDiffusion:
         # send the embed and image data via webhook
         await request.webhook.send(embed=data[0], file=data[1])
 
+        # set the playback event
+        self._generation_event.set()
+
         # wait for the generation event to be set
         await self._generation_event.wait()
         log.debug(f"Finishing generation '{request.prompt}'")
@@ -224,7 +206,7 @@ class StableDiffusion:
 
         try:
             log.error(error)
-            pass
+            await self.__deactivate__()
         finally:
             # clear the activation event
             self._activation.clear()
@@ -233,6 +215,90 @@ class StableDiffusion:
 
 
     #region Model Manipulation
+
+    async def __activate__(self, interaction: Interaction):
+        """
+        Activates the Stable Diffusion model.
+        """
+
+        try:
+            # if the model is already activated, raise error
+            if self._model is not None: raise StableDiffusion.AlreadyActivatedError(self._model)
+
+            # get the path of the checkpoint from configuration or default
+            cpkt: Path = self.cpkt if self.cpkt else Path('./sd-v1-4.ckpt')
+            # load the checkpoint
+            pl_sd: Any = torch.load(cpkt, map_location='cpu')
+            # get the global step from the checkpoint
+            global_step: str = pl_sd['global_step']  
+            # get the state dictionary from the checkpoint      
+            state_dict: Mapping[str, Any] = pl_sd["state_dict"]
+
+            # get the path of the weights from configuration or default
+            yaml: Path = self.yaml if self.yaml else Path('./v1-inference.yaml')
+            # load configuration from the weights file
+            config = OmegaConf.load(yaml.resolve())
+            # check the format of the weights configuration data
+            if not isinstance(config, MutableMapping): raise Exception(f'{self.yaml} contains an unexpected formatting.')
+            # get the model from configuration
+            self._model: Optional[Module] = await self.__get_model__(config)
+
+            # if the model was not loaded, raise error
+            if self._model is None:
+                raise Exception(f'Failed to load model from {cpkt.name}')
+
+            # get missing or unexpected keys from the state dictionary
+            missing_keys, unexpected_keys = self._model.load_state_dict(state_dict, strict=False)
+            # log missing keys, if any
+            if len(missing_keys) > 0: log.debug(f'Missing keys: {missing_keys}')
+            # log unexpected keys, if any
+            if len(unexpected_keys) > 0: log.debug(f'Unexpected keys: {unexpected_keys}')
+
+            log.info(f"CUDA {'is' if torch.cuda.is_available() else 'is not'} available.")
+            log.info(f"Using {self.device_id} device.")
+
+            # set the model to evaluation mode
+            self._model.eval()        
+            # send the model to the specified device
+            self._model.to(self.device)            
+            # set the activation event
+            self._activation.set()
+
+        except StableDiffusion.AlreadyActivatedError as exception:
+            log.warn(exception)
+            pass
+
+        except RuntimeError as exception:
+            log.warn(exception)
+            # ignore runtime exception errors
+            pass
+        
+        finally:
+            pass
+
+
+    async def __deactivate__(self):
+        """
+        Deactivates the Stable Diffusion model.
+        """
+
+        try:
+            # set the model to None and free memory
+            self._model = None
+            # clear the activation event
+            self._activation.clear()
+
+            free, total = torch.cuda.mem_get_info(self.device.index)
+            log.debug(f'Free: {free}B | Total: {total}B')
+
+        except Exception as exception:
+            log.warn(exception)
+            # ignore exception errors
+            pass
+        
+        finally:
+            pass
+
 
     async def __get_model__(self, config: MutableMapping[Any, Any]) -> Optional[Module]:
         """
@@ -349,7 +415,7 @@ class StableDiffusion:
 
             binary: BytesIO = BytesIO()
             format: Literal['bmp', 'png'] = 'png'
-            image.save(binary, bitmap_format=format)
+            image.save(binary, format=format, bitmap_format=format)
             binary.seek(0)
             return binary
 
@@ -388,12 +454,23 @@ class StableDiffusion:
     async def generate(self, interaction: Interaction, prompt: str, preset: Literal['low', 'medium', 'high'], steps: int = 50) -> None:
         """Generate an image given a prompt and an inference parameter preset"""
         
-        await interaction.response.defer()
+        followup: discord.Webhook = interaction.followup
+        await interaction.response.defer(ephemeral=False, thinking=True)
 
-        request: StableDiffusion.Request = StableDiffusion.Request(prompt, preset, steps, interaction.user, interaction.followup, interaction.created_at)
-        await self._generation_queue.put(request)
-
-        await interaction.followup.send(f"Your prompt has been queued for generation.")
+        try:
+            await self.__activate__(interaction)
+        except Exception as exception:
+            await followup.send(f'{exception}')
+            return
+        
+        try:
+            request: StableDiffusion.Request = StableDiffusion.Request(prompt, preset, steps, interaction.user, interaction.followup, interaction.created_at)
+            await self._generation_queue.put(request)
+            
+            await interaction.followup.send(f"Your prompt has been queued for generation.")
+        except Exception as exception:
+            await followup.send(f'{exception}')
+            raise
 
     #endregion
 
@@ -531,4 +608,30 @@ class StableDiffusion:
         def timestamp(self) -> datetime:
             return self._timestamp
         
+    #endregion
+
+
+    #region Error Classes
+
+    class StableDiffusionError(Exception):
+        """
+        """
+
+        def __init__(self, message: str, exception: Optional[Exception] = None):
+            self._message = message
+            self._inner_exception = exception
+
+        def __str__(self) -> str:
+            return self._message
+
+
+    class AlreadyActivatedError(StableDiffusionError):
+        """
+        """
+
+        def __init__(self, model: Optional[Module], exception: Optional[Exception] = None):
+            reference: str = 'MODEL_NAME' if model else 'unknown'
+            message: str = f'Model {reference} is already activated.'
+            super().__init__(message, exception)
+
     #endregion

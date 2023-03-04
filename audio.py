@@ -154,10 +154,10 @@ class Audio():
         Called when a request completes in the audio loop.
         """
 
-        # set the playback event
-        self._playback_event.set()
         # log error if it was provided
         if error: log.error(error)
+        # set the playback event
+        self._playback_event.set()
 
     #endregion
 
