@@ -3,6 +3,7 @@ Contains components related to OpenAI functionality.
 """
 
 from __future__ import annotations
+from datetime import datetime, timedelta
 
 import logging
 import re
@@ -18,9 +19,10 @@ from bot.configuration import Section
 from bot.database.column import ColumnBuilder
 from bot.database.storable import Storable
 from bot.database.table import Table, TableBuilder
-from discord import Embed, Interaction, Member, User
-from discord.app_commands import Choice, Range, choices, describe
+from discord import DeletedReferencedMessage, Embed, Guild, Interaction, Member, Message, MessageReference, Object, User
+from discord.app_commands import Choice, Range, choices, describe, guilds
 
+import tiktoken
 import openai
 from openai.openai_object import OpenAIObject
 
@@ -91,27 +93,11 @@ class OpenAI():
         openai.api_key = self.key
         # create database instance
         self._database: Database = Database(Path('./data/openai.db'))
-
-    #endregion
-
-
-    #region Database Management
-
-    async def __store__(self, interaction: Interaction, *, submission: Submission) -> None:
-        # create the database
         self._database.create(OpenAI.Submission)
-        # insert the submission
-        self._database.insert(submission)
 
+        self._chats: Database = Database(Path('./data/chat.db'))
+        self._chats.create(OpenAI.Chat)
 
-    async def __load__(self, interaction: Interaction) -> List[Submission]:
-        # create the database
-        self._database.create(OpenAI.Submission)
-        # get all submissions
-        submissions: List[OpenAI.Submission] = [OpenAI.Submission.__from_row__(row) for row in self._database.select(OpenAI.Submission)]
-        # return submissions
-        return submissions
-    
     #endregion
 
 
@@ -152,7 +138,7 @@ class OpenAI():
         # create submission object
         submission: OpenAI.Submission = OpenAI.TextSubmission(interaction.id, user.id, rate, model, prompt, '\n'.join(responses))
         # store the submission
-        await self.__store__(interaction, submission=submission)
+        self._database.insert(OpenAI.Submission, submission)
 
         # return the responses
         return responses
@@ -180,7 +166,7 @@ class OpenAI():
         # create submission object
         submission: OpenAI.Submission = OpenAI.ImageSubmission(interaction.id, user.id, rate, count, size)
         # store the submission
-        await self.__store__(interaction, submission=submission)
+        self._database.insert(OpenAI.Submission, submission)
 
         return responses
         
@@ -211,7 +197,7 @@ class OpenAI():
         await interaction.response.defer(thinking=True)
 
         # load all submissions
-        submissions: List[OpenAI.Submission] = await self.__load__(interaction)
+        submissions: List[OpenAI.Submission] = self._database.select(OpenAI.Submission)
         # get the message's author
         author: Union[User, Member] = interaction.user
         # get the target users
@@ -246,6 +232,57 @@ class OpenAI():
                 embed.add_field(name=model, value=f'${sum(costs):0.2f} ({len(costs)} submission{"s" if len(costs) != 1 else ""})')
 
             await interaction.followup.send(embed=embed)
+
+
+    @choices(model=[
+        Choice(name='ChatGPT',  value='gpt-3.5-turbo'),
+    ])
+    async def chat(self, interaction: Interaction, message: str, model: str = 'gpt-3.5-turbo', seed: str = 'You are a helpful assistant.') -> None:
+        """
+        ...
+        """
+
+        # defer the interaction
+        await interaction.response.defer(thinking=True, ephemeral=False)
+
+        # get all chats with a thread ID matching the user's ID
+        history: List[OpenAI.Chat] = [chat for chat in self._chats.select(OpenAI.Chat) if chat.thread_id == interaction.user.id]
+
+        # establish cutoff timestamp
+        cutoff: datetime = interaction.created_at - timedelta(hours=3)
+        # transform chats to dict format
+        messages: List[Dict[str, str]] = [chat.to_dict() for chat in history if chat.timestamp > cutoff]
+
+        for role, content in messages:
+            log.info('%s: %s', role, content)
+
+        # create query chat message from interaction
+        query_chat: OpenAI.Chat = OpenAI.Chat(interaction.created_at, interaction.user.id, interaction.user.id, message)
+        # store the query chat message
+        self._chats.insert(OpenAI.Chat, query_chat)
+
+        # add the 
+        messages.append(query_chat.to_dict())
+
+        response: Dict[str, Any] = openai.ChatCompletion.create(
+            model=model,
+            messages = messages
+        ) # type: ignore
+
+        # retrive list of reply choices
+        choices: List[Dict[str, Any]] = response['choices']
+        # choose the first choice
+        choice: Dict[str, Any] = choices[0]
+        # get the message object from the selected choice
+        reply: Dict[str, Union[str, int]] = choice['message']
+        # get the timestamp from thre response
+        timestamp: datetime = datetime.fromtimestamp(float(response['created']))
+
+        reply_chat = OpenAI.Chat.from_dict(reply, timestamp, interaction.user)
+        self._chats.insert(OpenAI.Chat, reply_chat)
+
+        await interaction.followup.send(message)
+        await interaction.followup.send(reply_chat.content)
 
 
     @describe(prompt='The input to provide to the AI model')
@@ -379,6 +416,78 @@ class OpenAI():
 
 
     #region Associated Classes
+
+    class Chat(Storable):
+
+        def __init__(self, timestamp: datetime, user_id: int, thread_id: int, content: str) -> None:
+            self._timestamp: datetime = timestamp
+            self._user_id: int = user_id
+            self._thread_id: int = thread_id
+            self._content: str = content
+        
+        @property
+        def timestamp(self) -> datetime:
+            return self._timestamp
+        @property
+        def user_id(self) -> int:
+            return self._user_id
+        @property
+        def thread_id(self) -> int:
+            return self._thread_id
+        @property
+        def content(self) -> str:
+            return self._content
+
+        @classmethod
+        def __table__(cls) -> Table:
+            # create a table builder
+            t_builder: TableBuilder = TableBuilder()
+            t_builder.setName('Chats')
+
+            # create a column builder
+            c_builder: ColumnBuilder = ColumnBuilder()
+            t_builder.addColumn(c_builder.setName('Timestamp').setType('TIMESTAMP').isPrimary().isUnique().column())
+            t_builder.addColumn(c_builder.setName('UserID').setType('INTEGER').column())
+            t_builder.addColumn(c_builder.setName('ThreadID').setType('INTEGER').column())
+            t_builder.addColumn(c_builder.setName('Content').setType('TEXT').column())
+
+            # build the table
+            table: Table = t_builder.table()
+            # return the table
+            return table
+
+        def __values__(self) -> Tuple[Any, ...]:
+            # create a tuple with the corresponding values
+            value: Tuple[Any, ...] = (self._timestamp, self._user_id, self._thread_id, self._content)
+            # return the tuple
+            return value
+
+        @classmethod
+        def __from_row__(cls: Type[OpenAI.Chat], row: Row) -> OpenAI.Chat:
+            timestamp: datetime = row['Timestamp']
+            user_id: int = row['UserID']
+            thread_id: int = row['ThreadID']
+            content: str = row['Content']
+            # return the Submission
+            return OpenAI.Chat(timestamp, user_id, thread_id, content)
+        
+        def to_dict(self) -> Dict[str, str]:
+            # set role to assistant if user_id is 0, otherwise set role to user
+            role: str = "assistant" if self.user_id == 0 else "user"
+            #
+            content: str = self.content
+            # return data
+            return {"role": role, "content": content}
+        
+        @classmethod
+        def from_dict(cls: Type[OpenAI.Chat], dict: Dict[str, Any], timestamp: datetime, user: Union[User, Member]):
+            log.critical(dict)            
+            user_id: int = user.id if str(dict['role']) == "user" else 0
+            thread_id: int = user.id
+            content: str = dict['content'] if isinstance(dict['content'], str) else str()
+            return OpenAI.Chat(timestamp, user_id, thread_id, content)
+            
+        
 
     class Submission(Storable):
 
@@ -535,6 +644,9 @@ class OpenAI():
 
 
         def __get_tokens__(self) -> int:
+            encoding: tiktoken.Encoding = tiktoken.encoding_for_model(self.model)
+            tokens: List[int] = encoding.encode(self._prompt)
+            return len(tokens)
             # split the prompt by whitespace characters
             prompt_segments: List[str] = re.split(r"[\s]+", self._prompt)
             # get a token count for each word
