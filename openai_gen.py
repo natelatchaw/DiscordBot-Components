@@ -3,7 +3,7 @@ Contains components related to OpenAI functionality.
 """
 
 from __future__ import annotations
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import logging
 import re
@@ -12,7 +12,7 @@ from logging import Logger
 from math import ceil
 from pathlib import Path
 from sqlite3 import Row
-from typing import Any, Dict, List, Literal, Optional, Tuple, Type, Union
+from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple, Type, Union
 
 from bot import Database, Settings
 from bot.configuration import Section
@@ -45,6 +45,20 @@ class OpenAI():
             if value and isinstance(value, str):
                 return value
         except:
+            self._config[key] = ""
+            return None
+        
+    @property
+    def memory(self) -> Optional[int]:
+        key: str = "memory"
+        value: Optional[str] = None
+        try:
+            value = self._config[key]
+            return int(value) if value else None
+        except KeyError:
+            self._config[key] = ""
+            return None
+        except ValueError:
             self._config[key] = ""
             return None
 
@@ -236,8 +250,12 @@ class OpenAI():
 
     @choices(model=[
         Choice(name='ChatGPT',  value='gpt-3.5-turbo'),
+        Choice(name='DaVinci',  value='text-davinci-003'),
+        Choice(name='Curie',    value='text-curie-001'),
+        Choice(name='Babbage',  value='text-babbage-001'),
+        Choice(name='Ada',      value='text-ada-001'),
     ])
-    async def chat(self, interaction: Interaction, message: str, model: str = 'gpt-3.5-turbo', seed: str = 'You are a helpful assistant.') -> None:
+    async def chat(self, interaction: Interaction, message: str, model: str = 'gpt-3.5-turbo') -> None:
         """
         ...
         """
@@ -245,44 +263,59 @@ class OpenAI():
         # defer the interaction
         await interaction.response.defer(thinking=True, ephemeral=False)
 
-        # get all chats with a thread ID matching the user's ID
-        history: List[OpenAI.Chat] = [chat for chat in self._chats.select(OpenAI.Chat) if chat.thread_id == interaction.user.id]
-
         # establish cutoff timestamp
         cutoff: datetime = interaction.created_at - timedelta(hours=3)
-        # transform chats to dict format
-        messages: List[Dict[str, str]] = [chat.to_dict() for chat in history if chat.timestamp > cutoff]
+        log.debug(f'ORIGIN: {interaction.created_at}')
+        log.debug(f'Cutoff: {cutoff}')
 
-        for role, content in messages:
-            log.info('%s: %s', role, content)
+        # get chat messages from database
+        history: Iterable[OpenAI.Chat] = [chat for chat in self._chats.select(OpenAI.Chat)]
+        # filter chat messages to messages in user's thread
+        history = filter(lambda chat: chat.thread_id == interaction.user.id, history)
+        # sort chat messages by timestamp
+        history = sorted(history, key=lambda chat: chat.timestamp, reverse=False)
+
+        # get setting for memory
+        memory: int = self.memory if self.memory else 10
+        # take the most recent messages, specified by the memory settings
+        history = list(history)[-1 * memory:]
+
+        log.debug(f'Including {len(list(history))} messages from chat history')
+        for chat in history: log.debug('%s: %s', chat.user_id, chat.content)
+
+        # transform chats to dict format
+        messages: List[Dict[str, str]] = [chat.to_dict() for chat in history]
 
         # create query chat message from interaction
-        query_chat: OpenAI.Chat = OpenAI.Chat(interaction.created_at, interaction.user.id, interaction.user.id, message)
-        # store the query chat message
-        self._chats.insert(OpenAI.Chat, query_chat)
+        prompt_chat: OpenAI.Chat = OpenAI.Chat(interaction.created_at, interaction.user.id, interaction.user.id, message, 0)
+        # convert the chat to a dict
+        prompt: Dict[str, str] = prompt_chat.to_dict()
+        # add the converted chat to the array of messages
+        messages.append(prompt)
 
-        # add the 
-        messages.append(query_chat.to_dict())
-
+        # create a chat completion
         response: Dict[str, Any] = openai.ChatCompletion.create(
             model=model,
             messages = messages
         ) # type: ignore
 
-        # retrive list of reply choices
-        choices: List[Dict[str, Any]] = response['choices']
-        # choose the first choice
-        choice: Dict[str, Any] = choices[0]
-        # get the message object from the selected choice
-        reply: Dict[str, Union[str, int]] = choice['message']
-        # get the timestamp from thre response
-        timestamp: datetime = datetime.fromtimestamp(float(response['created']))
+        # retreive request usage data
+        usage: Dict[str, int] = response['usage']
+        # retrieve prompt token usage
+        prompt_tokens: int = usage['prompt_tokens']
+        # update prompt chat's token count
+        prompt_chat.tokens = prompt_tokens
 
-        reply_chat = OpenAI.Chat.from_dict(reply, timestamp, interaction.user)
-        self._chats.insert(OpenAI.Chat, reply_chat)
+        # convert the reply dict to a chat object
+        completion_chat = OpenAI.Chat.from_response(response, interaction.user)
+        
+        # store the query chat message
+        self._chats.insert(OpenAI.Chat, prompt_chat)
+        # insert the reply chat into the database 
+        self._chats.insert(OpenAI.Chat, completion_chat)
 
         await interaction.followup.send(message)
-        await interaction.followup.send(reply_chat.content)
+        await interaction.followup.send(completion_chat.content)
 
 
     @describe(prompt='The input to provide to the AI model')
@@ -419,11 +452,12 @@ class OpenAI():
 
     class Chat(Storable):
 
-        def __init__(self, timestamp: datetime, user_id: int, thread_id: int, content: str) -> None:
+        def __init__(self, timestamp: datetime, user_id: int, thread_id: int, content: str, tokens: int) -> None:
             self._timestamp: datetime = timestamp
             self._user_id: int = user_id
             self._thread_id: int = thread_id
             self._content: str = content
+            self._tokens: int = tokens
         
         @property
         def timestamp(self) -> datetime:
@@ -437,6 +471,12 @@ class OpenAI():
         @property
         def content(self) -> str:
             return self._content
+        @property
+        def tokens(self) -> int:
+            return self._tokens
+        @tokens.setter
+        def tokens(self, value: int) -> None:
+            self._tokens = value
 
         @classmethod
         def __table__(cls) -> Table:
@@ -450,6 +490,7 @@ class OpenAI():
             t_builder.addColumn(c_builder.setName('UserID').setType('INTEGER').column())
             t_builder.addColumn(c_builder.setName('ThreadID').setType('INTEGER').column())
             t_builder.addColumn(c_builder.setName('Content').setType('TEXT').column())
+            t_builder.addColumn(c_builder.setName('Tokens').setType('INTEGER').column())
 
             # build the table
             table: Table = t_builder.table()
@@ -458,7 +499,7 @@ class OpenAI():
 
         def __values__(self) -> Tuple[Any, ...]:
             # create a tuple with the corresponding values
-            value: Tuple[Any, ...] = (self._timestamp, self._user_id, self._thread_id, self._content)
+            value: Tuple[Any, ...] = (self._timestamp, self._user_id, self._thread_id, self._content, self._tokens)
             # return the tuple
             return value
 
@@ -468,8 +509,9 @@ class OpenAI():
             user_id: int = row['UserID']
             thread_id: int = row['ThreadID']
             content: str = row['Content']
+            tokens: int = row['Tokens']
             # return the Submission
-            return OpenAI.Chat(timestamp, user_id, thread_id, content)
+            return cls(timestamp, user_id, thread_id, content, tokens)
         
         def to_dict(self) -> Dict[str, str]:
             # set role to assistant if user_id is 0, otherwise set role to user
@@ -477,15 +519,38 @@ class OpenAI():
             #
             content: str = self.content
             # return data
-            return {"role": role, "content": content}
+            return { "role": role, "content": content }
         
         @classmethod
-        def from_dict(cls: Type[OpenAI.Chat], dict: Dict[str, Any], timestamp: datetime, user: Union[User, Member]):
-            log.critical(dict)            
-            user_id: int = user.id if str(dict['role']) == "user" else 0
+        def from_dict(cls: Type[OpenAI.Chat], dict: Dict[str, Any], user: Union[User, Member], *, tokens: int, timestamp: datetime):
+            # get the user's ID
+            user_id: int = user.id if dict['role'] == 'user' else 0
+            # set the thread ID to the user's ID
             thread_id: int = user.id
-            content: str = dict['content'] if isinstance(dict['content'], str) else str()
-            return OpenAI.Chat(timestamp, user_id, thread_id, content)
+            # get the message content
+            content: str = dict['content']
+            return cls(timestamp, user_id, thread_id, content.strip(), tokens)
+        
+        @classmethod
+        def from_response(cls: Type[OpenAI.Chat], dict: Dict[str, Any], user: Union[User, Member]):
+            # retrieve timestamp data
+            created: int = dict['created']
+            # create datetime object from timestamp
+            timestamp: datetime = datetime.fromtimestamp(float(created), tz=timezone.utc)
+
+            # retreive request usage data
+            usage: Dict[str, int] = dict['usage']
+            # retrieve total token usage
+            tokens: int = usage['completion_tokens']
+
+            # retrieve list of reply choices
+            choices: List[Dict[str, Any]] = dict['choices']
+            # select the first choice from list of choices
+            choice: Dict[str, Any] = choices[0]
+            # get the message object from the selected choice
+            message: Dict[str, str] = choice['message']
+            
+            return cls.from_dict(message, user, tokens=tokens, timestamp=datetime.now(tz=timezone.utc))
             
         
 
