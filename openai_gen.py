@@ -22,7 +22,6 @@ from bot.database.table import Table, TableBuilder
 from discord import DeletedReferencedMessage, Embed, Guild, Interaction, Member, Message, MessageReference, Object, User
 from discord.app_commands import Choice, Range, choices, describe, guilds
 
-import tiktoken
 import openai
 from openai.openai_object import OpenAIObject
 
@@ -709,9 +708,6 @@ class OpenAI():
 
 
         def __get_tokens__(self) -> int:
-            encoding: tiktoken.Encoding = tiktoken.encoding_for_model(self.model)
-            tokens: List[int] = encoding.encode(self._prompt)
-            return len(tokens)
             # split the prompt by whitespace characters
             prompt_segments: List[str] = re.split(r"[\s]+", self._prompt)
             # get a token count for each word
