@@ -210,7 +210,7 @@ class OpenAI():
         await interaction.response.defer(thinking=True)
 
         # load all submissions
-        submissions: List[OpenAI.Submission] = self._database.select(OpenAI.Submission)
+        submissions: Iterable[OpenAI.Submission] = self._database.select(OpenAI.Submission)
         # get the message's author
         author: Union[User, Member] = interaction.user
         # get the target users
