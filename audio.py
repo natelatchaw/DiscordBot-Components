@@ -45,6 +45,30 @@ class Audio():
         key: str = "timeout"
         if value: self._config[key] = str(value)
 
+    @property
+    def before_options(self) -> Optional[str]:
+        key: str = 'before_options'
+        value: Optional[str] = None
+        try:
+            value = self._config[key]
+            if value and isinstance(value, str):
+                return value
+        except:
+            self._config[key] = ''
+            return None
+        
+    @property
+    def after_options(self) -> Optional[str]:
+        key: str = 'after_options'
+        value: Optional[str] = None
+        try:
+            value = self._config[key]
+            if value and isinstance(value, str):
+                return value
+        except:
+            self._config[key] = ''
+            return None
+
     #endregion
 
 
@@ -290,16 +314,23 @@ class Audio():
         return Audio.Metadata.__from_dict__(interaction, result) if result else None
 
 
-    async def __queue__(self, interaction: Interaction, metadata: Metadata, options: List[str] = list()) -> Request:
+    async def __queue__(self, interaction: Interaction, metadata: Metadata, *, before_options: List[str] = list(), after_options: List[str] = list()) -> Request:
         """
         Adds metadata to the queue.
         """
 
-        # add the audio filter parameter to the options list
-        options.append(r'-vn')
+        # append any options stored in configuration
+        if self.before_options:
+            before_options.append(self.before_options)
+        if self.after_options:
+            after_options.append(self.after_options)
+
+        # concatenate the options by space delimiter
+        before: str = ' '.join(before_options)
+        after: str = ' '.join(after_options)
 
         # create source from metadata url and options
-        source: discord.AudioSource = discord.FFmpegOpusAudio(metadata.source, options=' '.join(options))
+        source: discord.AudioSource = discord.FFmpegOpusAudio(metadata.source, before_options=before, options=after)
         # create request from source and metadata
         request: Audio.Request = Audio.Request(source, metadata)
 
@@ -363,7 +394,7 @@ class Audio():
             if multiplier and multiplier != 1.0: options.append(rf'-filter:a "atempo={multiplier}"')
 
             # queue the song and get the song's request data
-            request: Optional[Audio.Request] = await self.__queue__(interaction, metadata, options=options)
+            request: Optional[Audio.Request] = await self.__queue__(interaction, metadata, after_options=options)
 
             # generate an embed from the song request data
             embed: discord.Embed = self.__get_embed__(interaction, request.metadata)
