@@ -3,26 +3,27 @@ Contains components related to OpenAI functionality.
 """
 
 from __future__ import annotations
-from datetime import datetime, timedelta, timezone
 
 import logging
 import re
 import textwrap
+from datetime import datetime, timedelta, timezone
 from logging import Logger
 from math import ceil
 from pathlib import Path
 from sqlite3 import Row
-from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple, Type, Union
+from typing import (Any, Dict, Iterable, List, Literal, Optional, Tuple, Type,
+                    Union)
 
+import openai
 from bot import Database, Settings
 from bot.configuration import Section
 from bot.database.column import ColumnBuilder
 from bot.database.storable import Storable
 from bot.database.table import Table, TableBuilder
-from discord import DeletedReferencedMessage, Embed, Guild, Interaction, Member, Message, MessageReference, Object, User
-from discord.app_commands import Choice, Range, choices, describe, guilds
-
-import openai
+from discord import (Embed, Interaction,
+                     Member, User)
+from discord.app_commands import Choice, Range, choices, describe
 from openai.openai_object import OpenAIObject
 
 log: Logger = logging.getLogger(__name__)
