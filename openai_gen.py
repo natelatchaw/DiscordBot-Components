@@ -61,7 +61,20 @@ class OpenAI():
         except ValueError:
             self._config[key] = ""
             return None
-
+        
+    @property
+    def identity(self) -> Optional[str]:
+        key: str = "identity"
+        value: Optional[str] = None
+        try:
+            value = self._config[key]
+            return value
+        except KeyError:
+            self._config[key] = ""
+            return None
+        except ValueError:
+            self._config[key] = ""
+            return None
 
     @property
     def is_enabled(self) -> bool:
@@ -250,14 +263,14 @@ class OpenAI():
 
     @choices(model=[
         Choice(name='ChatGPT',  value='gpt-3.5-turbo'),
-        Choice(name='DaVinci',  value='text-davinci-003'),
-        Choice(name='Curie',    value='text-curie-001'),
-        Choice(name='Babbage',  value='text-babbage-001'),
-        Choice(name='Ada',      value='text-ada-001'),
+        #Choice(name='DaVinci',  value='text-davinci-003'),
+        #Choice(name='Curie',    value='text-curie-001'),
+        #Choice(name='Babbage',  value='text-babbage-001'),
+        #Choice(name='Ada',      value='text-ada-001'),
     ])
     async def chat(self, interaction: Interaction, message: str, model: str = 'gpt-3.5-turbo') -> None:
         """
-        ...
+        Chat with a GPT model.
         """
 
         # defer the interaction
@@ -265,8 +278,6 @@ class OpenAI():
 
         # establish cutoff timestamp
         cutoff: datetime = interaction.created_at - timedelta(hours=3)
-        log.debug(f'ORIGIN: {interaction.created_at}')
-        log.debug(f'Cutoff: {cutoff}')
 
         # get chat messages from database
         history: Iterable[OpenAI.Chat] = [chat for chat in self._chats.select(OpenAI.Chat)]
@@ -281,7 +292,6 @@ class OpenAI():
         history = list(history)[-1 * memory:]
 
         log.debug(f'Including {len(list(history))} messages from chat history')
-        for chat in history: log.debug('%s: %s', chat.user_id, chat.content)
 
         # transform chats to dict format
         messages: List[Dict[str, str]] = [chat.to_dict() for chat in history]
@@ -292,6 +302,10 @@ class OpenAI():
         prompt: Dict[str, str] = prompt_chat.to_dict()
         # add the converted chat to the array of messages
         messages.append(prompt)
+
+        identity: Optional[Dict[str, str]] = { 'role': 'system', 'content': self.identity } if self.identity else None
+        # insert the identity prompt
+        if identity: messages.insert(0, identity)
 
         # create a chat completion
         response: Dict[str, Any] = openai.ChatCompletion.create(
@@ -319,32 +333,6 @@ class OpenAI():
 
 
     @describe(prompt='The input to provide to the AI model')
-    @describe(model='The AI model to use for text generation')
-    @choices(model=[
-        Choice(name='Ada',      value='text-ada-001'),
-        Choice(name='Babbage',  value='text-babbage-001'),
-        Choice(name='Curie',    value='text-curie-001'),
-        Choice(name='DaVinci',  value='text-davinci-003'),
-    ])
-    @describe(tokens='The maximum number of tokens to limit the response to')
-    async def text(self, interaction: Interaction, prompt: str, model: str = 'text-davinci-003', tokens: Range[int, 64, 1024] = 128) -> None:
-        """
-        Provides a prompt to the designated AI model and generates text responses.
-        """
-
-        try:
-            # defer the interaction
-            await interaction.response.defer(thinking=True)
-            # send the prompt
-            responses: List[str] = await self.__send_completion__(interaction, prompt=prompt, model=model, tokens=tokens, echo=False)
-            # send the responses
-            await self.__print__(interaction, responses=responses)
-
-        except Exception as error:
-            await interaction.followup.send(f'{error}')
-
-
-    @describe(prompt='The input to provide to the AI model')
     @describe(size='The size of the images to generate')
     @choices(size=[
         Choice(name='Small',    value='256x256'),
@@ -365,83 +353,6 @@ class OpenAI():
             # send the responses
             await self.__print__(interaction, responses=responses, block_tag='')
         
-        except Exception as error:
-            await interaction.followup.send(f'{error}')
-
-
-    @describe(a='A type of medium (e.g., book, poem, haiku, etc.)')
-    @describe(about='The subject matter to generate the given medium from')
-    @describe(model='The AI model to use for text generation')
-    @choices(model=[
-        Choice(name='Ada', value='text-ada-001'),
-        Choice(name='Babbage', value='text-babbage-001'),
-        Choice(name='Curie', value='text-curie-001'),
-        Choice(name='DaVinci', value='text-davinci-003'),
-    ])
-    @describe(tokens='The maximum number of tokens to limit the response to')
-    async def write(self, interaction: Interaction, a: str, about: str, model: str = 'text-davinci-003', tokens: Range[int, 64, 1024] = 128) -> None:
-        """
-        Generates a text response provided a prompt about what to write.
-        """
-
-        try:        
-            # defer the interaction
-            await interaction.response.defer(thinking=True)
-            # initialize a list for content strings
-            content: List[str] = list()
-            # seed the prompt with the greentext prompt
-            content.append('write')
-            # append the value
-            if a: content.append(f'a {a}')
-            # append the value
-            if about: content.append(f'about {about}')
-            # join the content by spaces
-            prompt: str = ' '.join(content)
-            # send the prompt
-            responses: List[str] = await self.__send_completion__(interaction, prompt=prompt, model=model, tokens=tokens, echo=False)
-            # send the responses
-            await self.__print__(interaction, responses=responses)
-
-        except Exception as error:
-            await interaction.followup.send(f'{error}')
-        
-
-    @describe(be_me='A phrase to use for seeding the greentext (e.g., bottomless pit supervisor)')
-    @describe(model='The AI model to use for text generation')
-    @choices(model=[
-        Choice(name='Ada', value='text-ada-001'),
-        Choice(name='Babbage', value='text-babbage-001'),
-        Choice(name='Curie', value='text-curie-001'),
-        Choice(name='DaVinci', value='text-davinci-003'),
-    ])
-    @describe(tokens='The maximum number of tokens to limit the response to')
-    async def greentext(self, interaction: Interaction, be_me: str, model: str = 'text-davinci-003', tokens: Range[int, 64, 1024] = 256) -> None:
-        """
-        Generates a 4chan-style greentext.
-        """
-        
-        try:
-            # defer the interaction
-            await interaction.response.defer(thinking=True)
-            # initialize a list for content strings
-            content: List[str] = list()
-            # seed the prompt with the greentext prompt
-            content.append(textwrap.dedent('''
-                generate a 4chan greentext
-
-                >Be me
-            '''))
-            # if a be_me parameter was provided
-            if be_me:
-                # append the value
-                content.append('>' + be_me)
-            # join the content by newlines
-            prompt: str = '\n'.join(content)
-            # send the prompt
-            responses: List[str] = await self.__send_completion__(interaction, prompt=prompt, model=model, tokens=tokens, echo=True)
-            # send the responses
-            await self.__print__(interaction, responses=responses)
-            
         except Exception as error:
             await interaction.followup.send(f'{error}')
 
