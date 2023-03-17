@@ -286,8 +286,9 @@ class OpenAI():
         # transform chats to dict format
         messages: List[Dict[str, str]] = [chat.to_dict() for chat in history]
 
+        if not interaction.channel: raise Exception(f'Could not determine channel ID.')
         # create query chat message from interaction
-        prompt_chat: OpenAI.Chat = OpenAI.Chat(interaction.created_at, interaction.user.id, interaction.user.id, message, 0)
+        prompt_chat: OpenAI.Chat = OpenAI.Chat(interaction.created_at, interaction.user.id, interaction.channel.id, message, 0)
         # convert the chat to a dict
         prompt: Dict[str, str] = prompt_chat.to_dict()
         # add the converted chat to the array of messages
