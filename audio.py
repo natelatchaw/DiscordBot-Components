@@ -289,19 +289,19 @@ class Audio():
 
     #region Business Logic
 
-    async def __query__(self, interaction: Interaction, query: str, *, downloader: Optional[youtube_dl.YoutubeDL] = None) -> Optional[Metadata]:
+    async def __search__(self, interaction: Interaction, content: str, *, downloader: Optional[youtube_dl.YoutubeDL] = None) -> Optional[Metadata]:
         """
-        Searches for a query on YouTube and downloads the metadata.
+        Searches for video content and extracts the metadata.
 
         Parameters:
-            - query: A string or URL to download metadata from YouTube
+            - content: A string or URL to download metadata from
             - downloader: YoutubeDL downloader instance
         """
         
         # use provided downloader or initialize one if not provided
         downloader = downloader if downloader else youtube_dl.YoutubeDL(Audio.DEFAULTS)
-        # extract info for the provided query
-        data: Optional[Dict[str, Any]] = downloader.extract_info(query, download=False)
+        # extract info for the provided content
+        data: Optional[Dict[str, Any]] = downloader.extract_info(content, download=False)
 
         # get the entries property, if it exists
         entries: Optional[List[Any]] = data.get('entries') if data else None
@@ -362,9 +362,9 @@ class Audio():
 
     #region Application Commands
 
-    @describe(query='The audio track to search for')
+    @describe(content='A URL or video title to search for')
     @describe(speed='A numerical modifier to alter the audio speed by')
-    async def play(self, interaction: Interaction, query: str, speed: Range[float, 0.5, 2.0] = 1.0) -> None:
+    async def play(self, interaction: Interaction, content: str, speed: Range[float, 0.5, 2.0] = 1.0) -> None:
         """
         Plays audio in a voice channel
         """
@@ -383,9 +383,9 @@ class Audio():
             return
 
         try:
-            # download metadata for the provided query
-            metadata: Optional[Audio.Metadata] = await self.__query__(interaction, query)
-            if not metadata: raise Exception(f"No result found for '{query}'.")
+            # download metadata for the provided content
+            metadata: Optional[Audio.Metadata] = await self.__search__(interaction, content)
+            if not metadata: raise Exception(f"No result found for '{content}'.")
 
             # get multiplier if speed was provided
             multiplier: Optional[float] = float(speed) if speed else None
