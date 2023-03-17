@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from asyncio import Event, Queue
 from logging import Logger
 from sqlite3 import Row
@@ -403,7 +404,9 @@ class Audio():
             await followup.send(embed=embed)
 
         except youtube_dl.utils.DownloadError as exception:
-            await followup.send(f'An error occurred during download.\nDetails: {exception.msg}')
+            ansi_escape: re.Pattern = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+            inner: str = ansi_escape.sub('', str(exception.msg))
+            await followup.send(f'An error occurred during download.\nDetails: {inner}')
             raise
 
         except Exception as exception:
