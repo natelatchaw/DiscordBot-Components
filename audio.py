@@ -402,6 +402,10 @@ class Audio():
             # send the embed
             await followup.send(embed=embed)
 
+        except youtube_dl.utils.DownloadError as exception:
+            await followup.send(f'An error occurred during download.\nDetails: {exception.msg}')
+            raise
+
         except Exception as exception:
             await followup.send(f'{exception}')
             raise
