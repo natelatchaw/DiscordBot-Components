@@ -383,7 +383,7 @@ class Audio():
 
         try:
             # download metadata for the provided query
-            metadata: Optional[Audio.Metadata] = await self.__query__(interaction, f'ytsearch:{query}')
+            metadata: Optional[Audio.Metadata] = await self.__query__(interaction, query)
             if not metadata: raise Exception(f"No result found for '{query}'.")
 
             # get multiplier if speed was provided
@@ -482,23 +482,23 @@ class Audio():
             id: int = interaction.id
             user_id: int = interaction.user.id
 
-            video_id: str = dict['id']
+            video_id: str = dict.get('id', str())
             if not isinstance(video_id, str): raise KeyError('id')
 
-            title: str = dict['title']
+            title: str = dict.get('title', str())
             if not isinstance(title, str): raise KeyError('title')
 
-            channel: str = dict['channel']
+            channel: str = dict.get('channel', str())
             if not isinstance(channel, str): raise KeyError('channel')
 
-            thumbnail: str = dict['thumbnail']
+            thumbnail: str = dict.get('thumbnail', str())
             if not isinstance(channel, str): raise KeyError('thumbnail')
 
-            url: str = dict['url']
+            url: str = dict.get('url', str())
             if not isinstance(url, str): raise KeyError('url')
 
-            video_url: str = dict['webpage_url']
-            if not isinstance(video_url, str): raise KeyError('video_url')
+            video_url: str = dict.get('webpage_url', str())
+            if not isinstance(video_url, str): raise KeyError('webpage_url')
 
             return Audio.Metadata(id, user_id, video_id, title, channel, thumbnail, url, video_url)
 
@@ -631,6 +631,7 @@ class Audio():
     AUDIO_LOGGER: Audio.Logger = Logger()
 
     DEFAULTS: Dict[str, Any] = {
+        'default_search': 'auto',
         'format': 'bestaudio/best',
         'noplaylist': False,
         'postprocessors': [
