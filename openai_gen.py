@@ -75,6 +75,10 @@ class OpenAI():
         except ValueError:
             self._config[key] = ""
             return None
+    @identity.setter
+    def identity(self, value: str) -> None:
+        key: str = "identity"
+        self._config[key] = value
 
     @property
     def is_enabled(self) -> bool:
@@ -259,6 +263,21 @@ class OpenAI():
                 embed.add_field(name=model, value=f'${sum(costs):0.2f} ({len(costs)} submission{"s" if len(costs) != 1 else ""})')
 
             await interaction.followup.send(embed=embed)
+
+
+    async def set_identity(self, interaction: Interaction, prompt: str) -> None:
+        """
+        Set the system identity prompt for the GPT model.
+        """
+
+        # defer the interaction
+        await interaction.response.defer(thinking=True, ephemeral=False)
+
+        self.identity = prompt
+        flavor: str = 'Got it. I will now try to adhere to the following identity:'
+
+        #
+        await interaction.followup.send(f'{flavor}\n{self.identity}')
 
 
     @choices(model=[
