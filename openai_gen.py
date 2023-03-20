@@ -265,9 +265,10 @@ class OpenAI():
             await interaction.followup.send(embed=embed)
 
 
+    @describe(prompt='The prompt to use for the GPT model identity')
     async def set_identity(self, interaction: Interaction, prompt: str) -> None:
         """
-        Set the system identity prompt for the GPT model.
+        Set the system identity prompt for the GPT model
         """
 
         # defer the interaction
@@ -280,6 +281,8 @@ class OpenAI():
         await interaction.followup.send(f'{flavor}\n{self.identity}')
 
 
+    @describe(message='The message to send to the GPT model')
+    @describe(model='The GPT model to chat with')
     @choices(model=[
         Choice(name='ChatGPT',  value='gpt-3.5-turbo'),
         #Choice(name='DaVinci',  value='text-davinci-003'),
