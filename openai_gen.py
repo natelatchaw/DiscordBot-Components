@@ -276,13 +276,15 @@ class OpenAI():
         # defer the interaction
         await interaction.response.defer(thinking=True, ephemeral=False)
 
+        if not interaction.channel: raise Exception(f'Could not determine channel ID.')
+
         # establish cutoff timestamp
         cutoff: datetime = interaction.created_at - timedelta(hours=3)
 
         # get chat messages from database
         history: Iterable[OpenAI.Chat] = [chat for chat in self._chats.select(OpenAI.Chat)]
         # filter chat messages to messages in user's thread
-        history = filter(lambda chat: chat.thread_id == interaction.user.id, history)
+        history = filter(lambda chat: chat.thread_id == interaction.channel.id, history)
         # sort chat messages by timestamp
         history = sorted(history, key=lambda chat: chat.timestamp, reverse=False)
 
@@ -295,8 +297,6 @@ class OpenAI():
 
         # transform chats to dict format
         messages: List[Dict[str, str]] = [chat.to_dict() for chat in history]
-
-        if not interaction.channel: raise Exception(f'Could not determine channel ID.')
         # create query chat message from interaction
         prompt_chat: OpenAI.Chat = OpenAI.Chat(interaction.created_at, interaction.user.id, interaction.channel.id, message, 0)
         # convert the chat to a dict
