@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections import Counter
 import logging
-from operator import attrgetter
 import re
 from asyncio import Event
+from collections import Counter
 from datetime import datetime
 from logging import Logger
 from pathlib import Path
@@ -13,7 +12,6 @@ from sqlite3 import Row
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import discord
-import numpy
 import yt_dlp as youtube_dl
 from bot import Database
 from bot.configuration.section import Section
