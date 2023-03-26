@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import re
 from asyncio import Event
@@ -9,7 +10,8 @@ from datetime import datetime
 from logging import Logger
 from pathlib import Path
 from sqlite3 import Row
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from typing import (Any, Dict, Generic, Iterable, Iterator, List, Optional,
+                    Tuple, Type, TypeVar, Union)
 
 import discord
 import yt_dlp as youtube_dl
@@ -22,7 +24,7 @@ from bot.settings.settings import Settings
 from discord import AudioSource, Interaction
 from discord.app_commands import Range, describe
 
-from request import RequestQueue
+RequestType = TypeVar('RequestType')
 
 log: Logger = logging.getLogger(__name__)
 
@@ -88,7 +90,7 @@ class Audio():
 
         self._connection: Event = Event()
         self._playback_event: Event = Event()
-        self._playback_queue: RequestQueue[Audio.Request] = RequestQueue()
+        self._playback_queue: Audio.Queue[Audio.Request] = Audio.Queue()
         self._client: Optional[discord.VoiceClient] = None
 
         try:
@@ -620,6 +622,32 @@ class Audio():
             self._metadata: Audio.Metadata = metadata
             self._source: AudioSource = source
 
+
+    class Queue(Generic[RequestType], Iterable[RequestType]):
+
+        @property
+        def current(self) -> Optional[RequestType]:
+            return self._current
+
+        def __init__(self) -> None:
+            self._queue: asyncio.Queue[RequestType] = asyncio.Queue()
+            self._deque: collections.deque[RequestType] = collections.deque()
+            self._current: Optional[RequestType] = None
+            super().__init__()
+
+        async def put(self, item: RequestType) -> None:
+            await self._queue.put(item)
+            self._deque.append(item)
+
+        async def get(self) -> RequestType:
+            self._current = None
+            item: RequestType = await self._queue.get()
+            self._current = self._deque.popleft()
+            return item
+
+        def __iter__(self) -> Iterator[RequestType]:
+            return self._deque.__iter__()
+
     
     class RequestEmbed(discord.Embed):
         
@@ -634,6 +662,7 @@ class Audio():
             self.set_author(name=user.display_name, icon_url=user.avatar.url if user.avatar else None)
             self.set_image(url=current.thumbnail if current and large_image else None)
             self.set_thumbnail(url=current.thumbnail if current and not large_image else None)
+
     
     class RequestQueueEmbed(discord.Embed):
 
@@ -649,6 +678,7 @@ class Audio():
             for item in metadata: self.add_field(name=item.title, value=item.channel, inline=False)
             self.set_image(url=current.thumbnail if current and large_image else None)
             self.set_thumbnail(url=current.thumbnail if current and not large_image else None)
+
 
     class RequestFrequencyEmbed(discord.Embed):
 
