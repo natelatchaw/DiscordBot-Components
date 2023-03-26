@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 import logging
+from operator import attrgetter
 import re
-from asyncio import Event, Queue
+from asyncio import Event
+from datetime import datetime
 from logging import Logger
+from pathlib import Path
 from sqlite3 import Row
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import discord
+import numpy
 import yt_dlp as youtube_dl
+from bot import Database
 from bot.configuration.section import Section
 from bot.database.column import ColumnBuilder
 from bot.database.storable import TStorable
@@ -17,6 +23,8 @@ from bot.database.table import Table, TableBuilder
 from bot.settings.settings import Settings
 from discord import AudioSource, Interaction
 from discord.app_commands import Range, describe
+
+from request import RequestQueue
 
 log: Logger = logging.getLogger(__name__)
 
@@ -82,9 +90,8 @@ class Audio():
 
         self._connection: Event = Event()
         self._playback_event: Event = Event()
-        self._playback_queue: Queue = Queue()
+        self._playback_queue: RequestQueue[Audio.Request] = RequestQueue()
         self._client: Optional[discord.VoiceClient] = None
-        self._current: Optional[Audio.Metadata] = None
 
         try:
             self._settings: Settings = kwargs['settings']
@@ -101,6 +108,9 @@ class Audio():
         self._settings.client[self.__class__.__name__] = Section(self.__class__.__name__, self._settings.client._parser, self._settings.client._reference)
         # create reference to Audio config section
         self._config: Section = self._settings.client[self.__class__.__name__]
+        # create database instance
+        self._database: Database = Database(Path(f'./data/{__name__}.db'))
+        self._database.create(Audio.Metadata)
         # begin audio loop
         await self.__start__()
 
@@ -149,8 +159,6 @@ class Audio():
         self._playback_event.clear()
         
         log.debug(f"Beginning track '{request.metadata.title}'")
-        # set the current metadata
-        self._current = request.metadata
         # return if client is unavailable
         if self._client is None: return
         # play the request
@@ -255,11 +263,11 @@ class Audio():
         """
 
         # store reference to the current metadata
-        skipped: Optional[Audio.Metadata] = self._current
+        skipped: Optional[Audio.Request] = self._playback_queue.current
         # stop the voice client if available
         if self._client: self._client.stop()
         # return the skipped metadata
-        return skipped
+        return skipped.metadata if skipped else None
 
 
     async def __pause__(self, interaction: Interaction) -> None:
@@ -337,25 +345,10 @@ class Audio():
 
         # add the request to the queue
         await self._playback_queue.put(request)
+        # insert the request to the database
+        self._database.insert(Audio.Metadata, request.metadata)
         # return the request
         return request
-
-        
-    def __get_embed__(self, interaction: discord.Interaction, metadata: Metadata) -> discord.Embed:
-        user: Union[discord.User, discord.Member] = interaction.user
-
-        embed: discord.Embed = discord.Embed()
-
-        embed.set_author(name=user.display_name, icon_url=user.avatar.url if user.avatar else None)
-        embed.set_image(url=metadata.thumbnail)
-
-        embed.title =           metadata.title
-        embed.description =     metadata.channel
-        embed.url =             metadata.url
-        embed.timestamp =       interaction.created_at
-        embed.color =           discord.Colour.from_rgb(r=255, g=0, b=0)
-
-        return embed
 
     #endregion
 
@@ -398,7 +391,7 @@ class Audio():
             request: Optional[Audio.Request] = await self.__queue__(interaction, metadata, after_options=options)
 
             # generate an embed from the song request data
-            embed: discord.Embed = self.__get_embed__(interaction, request.metadata)
+            embed: discord.Embed = Audio.RequestEmbed(interaction, request.metadata)
 
             # send the embed
             await followup.send(embed=embed)
@@ -413,6 +406,23 @@ class Audio():
             await followup.send(f'{exception}')
             raise
 
+    async def queue(self, interaction: discord.Interaction) -> None:
+        """
+        Displays the request queue
+        """
+
+        followup: discord.Webhook = interaction.followup
+        await interaction.response.defer(ephemeral=False, thinking=True)
+
+        queue: List[Audio.Metadata] = [request.metadata for request in list(self._playback_queue)][:5]
+        current: Optional[Audio.Metadata] = self._playback_queue.current.metadata if self._playback_queue.current else None
+        
+        # generate an embed from the song request data
+        embed: Optional[discord.Embed] = Audio.RequestQueueEmbed(interaction, queue, current)
+        
+        # send the embed
+        await followup.send(embed=embed)
+
     async def skip(self, interaction: discord.Interaction) -> None:
         """
         Skips the currently playing song
@@ -425,9 +435,36 @@ class Audio():
         metadata: Optional[Audio.Metadata] = await self.__skip__(interaction)
 
         # generate an embed from the song request data
-        embed: Optional[discord.Embed] = self.__get_embed__(interaction, metadata) if metadata else None
+        embed: Optional[discord.Embed] = Audio.RequestEmbed(interaction, metadata) if metadata else None
+        # determine whether the message should be ephemeral
+        ephemeral: bool = not metadata
         # send the embed
-        await followup.send(f'Skipped {metadata.title if metadata else "Missing Title"}')
+        await followup.send(f'Skipped {metadata.title}' if metadata else 'Nothing is playing', ephemeral=ephemeral)
+
+    async def top(self, interaction: discord.Interaction) -> None:
+        """
+        Displays your most frequent song requests
+        """
+
+        followup: discord.Webhook = interaction.followup
+        await interaction.response.defer(ephemeral=False, thinking=True)
+
+        # get the user's ID
+        user_id: int = interaction.user.id
+        # get the user's stored metadata
+        results: List[Audio.Metadata] = [metadata for metadata in self._database.select(Audio.Metadata) if metadata.user_id == user_id]
+
+        videos: Dict[str, Audio.Metadata] = { metadata.video_id : metadata for metadata in results }
+        counted = Counter(metadata.video_id for metadata in results)
+        top: List[Tuple[str, int]]= counted.most_common(5)
+        output: List[Tuple[Audio.Metadata, int]] = [(videos[entry], count) for entry, count in top]
+
+        # generate an embed from the song request data
+        embed: Optional[discord.Embed] = Audio.RequestFrequencyEmbed(interaction, output)
+        # send the embed
+        await followup.send(embed=embed)
+
+
 
     #endregion
 
@@ -469,19 +506,18 @@ class Audio():
             return self._url
 
 
-        def __init__(self, id: int, user_id: int, video_id: str, title: str, channel: str, thumbnail: str, url: str, video_url: str) -> None:
+        def __init__(self, id: int, user_id: int, video_id: str, title: str, channel: str, thumbnail: str, url: str, source: str) -> None:
             self._id: int = id
             self._user_id: int = user_id
             self._video_id: str = video_id
             self._title: str = title
             self._channel: str = channel
             self._thumbnail: str = thumbnail
-            self._source: str = url
-            self._url: str = video_url
+            self._url: str = url
+            self._source: str = source
 
         def __str__(self) -> str:
             return f'[{self._video_id}] {self._title} ({self._url})'
-
 
         @classmethod
         def __from_dict__(cls, interaction: discord.Interaction, dict: Dict[str, Any]) -> Audio.Metadata:
@@ -501,13 +537,13 @@ class Audio():
             thumbnail: str = dict.get('thumbnail', str())
             if not isinstance(channel, str): raise KeyError('thumbnail')
 
-            url: str = dict.get('url', str())
-            if not isinstance(url, str): raise KeyError('url')
+            url: str = dict.get('webpage_url', str())
+            if not isinstance(url, str): raise KeyError('webpage_url')
 
-            video_url: str = dict.get('webpage_url', str())
-            if not isinstance(video_url, str): raise KeyError('webpage_url')
+            source: str = dict.get('url', str())
+            if not isinstance(source, str): raise KeyError('url')
 
-            return Audio.Metadata(id, user_id, video_id, title, channel, thumbnail, url, video_url)
+            return Audio.Metadata(id, user_id, video_id, title, channel, thumbnail, url, source)
 
         @classmethod
         def __table__(cls) -> Table:
@@ -532,6 +568,8 @@ class Audio():
             t_builder.addColumn(c_builder.setName('Thumbnail').setType('TEXT').column())
             # create url column
             t_builder.addColumn(c_builder.setName('URL').setType('TEXT').column())
+            # create source column
+            t_builder.addColumn(c_builder.setName('Source').setType('TEXT').column())
 
             # build the table
             table: Table = t_builder.table()
@@ -540,7 +578,7 @@ class Audio():
 
         def __values__(self) -> Tuple[Any, ...]:
             # create a tuple with the corresponding values
-            value: Tuple[Any, ...] = (self.id, self.user_id, self.video_id, self.title, self.channel, self.thumbnail, self.url)
+            value: Tuple[Any, ...] = (self.id, self.user_id, self.video_id, self.title, self.channel, self.thumbnail, self.url, self.source)
             # return the tuple
             return value
 
@@ -552,8 +590,6 @@ class Audio():
             user_id: int = row['UserID']
             # Get VideoID value from the row
             video_id: str = row['VideoID']
-            # Get URL value from the row
-            url: str = row['URL']
             # Get Title value from the row
             title: str = row['Title']
             # Get Channel value from the row
@@ -561,9 +597,11 @@ class Audio():
             # Get thumbnail value from the row
             thumbnail: str = row['Thumbnail']
             # Get thumbnail value from the row
-            video_url: str = row['VideoURL']
+            url: str = row['URL']
+            # Get source value from the row
+            source: str = row['Source']
             # return the Metadata
-            return Audio.Metadata(id, user_id, video_id, url, title, channel, thumbnail, video_url)
+            return Audio.Metadata(id, user_id, video_id, title, channel, thumbnail, url, source)
 
 
     class Request():
@@ -583,6 +621,49 @@ class Audio():
         def __init__(self, source: AudioSource, metadata: Audio.Metadata):
             self._metadata: Audio.Metadata = metadata
             self._source: AudioSource = source
+
+    
+    class RequestEmbed(discord.Embed):
+        
+        def __init__(self, interaction: discord.Interaction, current: Audio.Metadata, large_image: bool = True):
+            color: discord.Color = discord.Color.blurple()
+            user: Union[discord.User, discord.Member] = interaction.user
+            title: str = current.title
+            description: str = current.channel
+            url: Optional[str] = current.url
+            timestamp: Optional[datetime] = interaction.created_at
+            super().__init__(color=color, title=title, description=description, url=url, timestamp=timestamp)
+            self.set_author(name=user.display_name, icon_url=user.avatar.url if user.avatar else None)
+            self.set_image(url=current.thumbnail if current and large_image else None)
+            self.set_thumbnail(url=current.thumbnail if current and not large_image else None)
+    
+    class RequestQueueEmbed(discord.Embed):
+
+        def __init__(self, interaction: discord.Interaction, metadata: List[Audio.Metadata], current: Optional[Audio.Metadata] = None, large_image: bool = False):
+            color: discord.Color = discord.Color.blurple()
+            user: Union[discord.User, discord.Member] = interaction.user
+            title: str = current.title if current else 'Request Queue'
+            description: Optional[str] = current.channel if current else None
+            url: Optional[str] = None
+            timestamp: Optional[datetime] = interaction.created_at
+            super().__init__(color=color, title=title, description=description, url=url, timestamp=timestamp)
+            self.set_author(name=user.display_name, icon_url=user.avatar.url if user.avatar else None)
+            for item in metadata: self.add_field(name=item.title, value=item.channel, inline=False)
+            self.set_image(url=current.thumbnail if current and large_image else None)
+            self.set_thumbnail(url=current.thumbnail if current and not large_image else None)
+
+    class RequestFrequencyEmbed(discord.Embed):
+
+        def __init__(self, interaction: discord.Interaction, metadata: List[Tuple[Audio.Metadata, int]]):
+            color: discord.Color = discord.Color.blurple()
+            user: Union[discord.User, discord.Member] = interaction.user
+            title: str = 'Top Requests'
+            description: Optional[str] = None
+            url: Optional[str] = None
+            timestamp: Optional[datetime] = interaction.created_at
+            super().__init__(color=color, title=title, description=description, url=url, timestamp=timestamp)
+            self.set_author(name=user.display_name, icon_url=user.avatar.url if user.avatar else None)
+            for item, count in metadata: self.add_field(name=item.title, value=f'{count} requests', inline=False)
 
 
     class Logger():
