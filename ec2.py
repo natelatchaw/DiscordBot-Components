@@ -198,6 +198,7 @@ class EC2():
         except ClientError as error:
             await interaction.followup.send("An error occurred. Check the logs for details.")
             log.error(error)
+            return
 
         #
         await interaction.followup.send(f'EC2 instance started successfully.')
@@ -224,6 +225,7 @@ class EC2():
         except ClientError as error:
             await interaction.followup.send('An error occurred. Check the logs for details.')
             log.error(error)
+            return
 
         #
         await interaction.followup.send(f'EC2 instance stopped successfully.')
@@ -251,6 +253,7 @@ class EC2():
         except ClientError as error:
             await interaction.followup.send('An error occurred. Check the logs for details.')
             log.error(error)
+            return
 
         #
         await interaction.followup.send(f'EC2 instance restarted successfully.')
