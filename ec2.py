@@ -17,6 +17,20 @@ class EC2():
     """
 
     @property
+    def owner(self) -> Optional[int]:
+        key: str = 'owner'
+        value: Optional[str] = None
+        try:
+            value = self._config[key]
+            return int(value) if value and isinstance(value, str) else None
+        except KeyError:
+            self._config[key] = ""
+            return None
+        except ValueError:
+            self._config[key] = ""
+            return None
+
+    @property
     def region(self) -> Optional[str]:
         key: str = 'region'
         value: Optional[str] = None
@@ -84,6 +98,8 @@ class EC2():
         # create reference to Audio config section
         self._config: Section = self._settings.client[key]
 
+        self.whitelist: List[int] = []
+
         params: Dict[str, str] = {
             'aws_access_key_id': self.key_id,
             'aws_secret_access_key': self.key_value,
@@ -128,6 +144,38 @@ class EC2():
 
         await interaction.followup.send(embed=embed)
 
+    async def allow(self, interaction: Interaction, user: int) -> None:
+        """
+        Adds a user to the allowlist
+        """
+
+        # defer the interaction
+        await interaction.response.defer(thinking=True, ephemeral=False)
+
+        if interaction.user.id is not self.owner:
+            await interaction.followup.send('You are not authorized to run this command.')
+            return
+        
+        if user not in self.whitelist: self.whitelist.append(user)
+
+        await interaction.followup.send('Allowlist updated.')
+
+    async def deny(self, interaction: Interaction, user: int) -> None:
+        """
+        Adds a user to the allowlist
+        """
+
+        # defer the interaction
+        await interaction.response.defer(thinking=True, ephemeral=False)
+
+        if interaction.user.id is not self.owner:
+            await interaction.followup.send('You are not authorized to run this command.')
+            return
+        
+        if user in self.whitelist: self.whitelist.remove(user)
+
+        await interaction.followup.send('Allowlist updated.')
+
 
     async def start(self, interaction: Interaction) -> None:
         """
@@ -137,8 +185,12 @@ class EC2():
         # defer the interaction
         await interaction.response.defer(thinking=True, ephemeral=False)
 
+        if interaction.user.id != self.owner and interaction.user.id not in self.whitelist:
+            await interaction.followup.send('You are not authorized to run this command.')
+            return
+
         if not self.instance_id:
-            await interaction.followup.send("No instance ID was provided.")
+            await interaction.followup.send('No instance ID was provided.')
             return
         
         try:
@@ -159,14 +211,18 @@ class EC2():
         # defer the interaction
         await interaction.response.defer(thinking=True, ephemeral=False)
 
+        if interaction.user.id != self.owner and interaction.user.id not in self.whitelist:
+            await interaction.followup.send('You are not authorized to run this command.')
+            return
+
         if not self.instance_id:
-            await interaction.followup.send("No instance ID was provided.")
+            await interaction.followup.send('No instance ID was provided.')
             return
         
         try:
             self.ec2.stop_instances(InstanceIds=[self.instance_id], DryRun=False)
         except ClientError as error:
-            await interaction.followup.send("An error occurred. Check the logs for details.")
+            await interaction.followup.send('An error occurred. Check the logs for details.')
             log.error(error)
 
         #
@@ -181,14 +237,19 @@ class EC2():
         # defer the interaction
         await interaction.response.defer(thinking=True, ephemeral=False)
 
+        if interaction.user.id != self.owner and interaction.user.id not in self.whitelist:
+            await interaction.followup.send('You are not authorized to run this command.')
+            return
+
+
         if not self.instance_id:
-            await interaction.followup.send("No instance ID was provided.")
+            await interaction.followup.send('No instance ID was provided.')
             return
         
         try:
             self.ec2.reboot_instances(InstanceIds=[self.instance_id], DryRun=False)
         except ClientError as error:
-            await interaction.followup.send("An error occurred. Check the logs for details.")
+            await interaction.followup.send('An error occurred. Check the logs for details.')
             log.error(error)
 
         #
