@@ -8,6 +8,7 @@ from bot import Settings
 from bot.configuration import Section
 from botocore.exceptions import ClientError
 from discord import Embed, Interaction
+import discord
 
 log: Logger = logging.getLogger(__name__)
 
@@ -108,6 +109,22 @@ class EC2():
         
         self.ec2 = boto3.client('ec2', **params)
 
+
+    def _check_id(self, user_id: str) -> int:
+        core_message: str = 'Supplied user ID is invalid.'
+
+        try:
+            id: int = int(user_id)
+        except ValueError:
+            raise ValueError(' '.join([core_message, 'Discord user IDs are integers.']))
+
+        # check length of user ID for validity
+        if len(user_id) < 17 or len(user_id) > 19:
+            raise ValueError(' '.join([core_message, 'Discord user IDs are between 17 and 19 digits long.']))
+        
+        return id
+
+
     async def info(self, interaction: Interaction) -> None:
         """
         Gets info about the preconfigured EC2 instance
@@ -144,37 +161,58 @@ class EC2():
 
         await interaction.followup.send(embed=embed)
 
-    async def allow(self, interaction: Interaction, user: int) -> None:
+    async def allow(self, interaction: Interaction, user: str) -> None:
         """
-        Adds a user to the allowlist
-        """
-
-        # defer the interaction
-        await interaction.response.defer(thinking=True, ephemeral=False)
-
-        if interaction.user.id is not self.owner:
-            await interaction.followup.send('You are not authorized to run this command.')
-            return
-        
-        if user not in self.whitelist: self.whitelist.append(user)
-
-        await interaction.followup.send('Allowlist updated.')
-
-    async def deny(self, interaction: Interaction, user: int) -> None:
-        """
-        Adds a user to the allowlist
+        Adds a user to the allowlist.
         """
 
         # defer the interaction
         await interaction.response.defer(thinking=True, ephemeral=False)
 
-        if interaction.user.id is not self.owner:
+        if interaction.user.id != self.owner:
             await interaction.followup.send('You are not authorized to run this command.')
             return
         
-        if user in self.whitelist: self.whitelist.remove(user)
+        try:
+            user_id: int = self._check_id(user)
+        except ValueError as error:
+            await interaction.followup.send(error)
+            return
 
-        await interaction.followup.send('Allowlist updated.')
+        if user_id not in self.whitelist:
+            self.whitelist.append(user_id)
+            await interaction.followup.send(f'{user_id} has been added to the allowlist.')
+            return
+        else:
+            await interaction.followup.send(f'{user_id} was found in the allowlist. No action taken.')
+            return
+
+
+    async def deny(self, interaction: Interaction, user: str) -> None:
+        """
+        Removes a user from the allowlist.
+        """
+
+        # defer the interaction
+        await interaction.response.defer(thinking=True, ephemeral=False)
+
+        if interaction.user.id != self.owner:
+            await interaction.followup.send('You are not authorized to run this command.')
+            return
+        
+        try:
+            user_id: int = self._check_id(user)
+        except ValueError as error:
+            await interaction.followup.send(error)
+            return
+        
+        if user_id in self.whitelist:
+            self.whitelist.remove(user_id)
+            await interaction.followup.send(f'{user_id} has been removed from the allowlist.')
+            return
+        else:
+            await interaction.followup.send(f'{user_id} was not found in the allowlist. No action taken.')
+            return
 
 
     async def start(self, interaction: Interaction) -> None:
