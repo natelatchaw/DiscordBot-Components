@@ -105,7 +105,7 @@ class Audio():
         """
 
         # create a config section for Audio
-        self._settings.client[self.__class__.__name__] = Section(self.__class__.__name__, self._settings.client._parser, self._settings.client._reference)
+        self._settings.client[self.__class__.__name__] = Section(self.__class__.__name__, self._settings.client._reference, self._settings.client._parser)
         # create reference to Audio config section
         self._config: Section = self._settings.client[self.__class__.__name__]
         # create database instance

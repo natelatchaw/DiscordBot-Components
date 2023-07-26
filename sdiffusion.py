@@ -129,7 +129,7 @@ class StableDiffusion:
         """
 
         # create a config section for this component
-        self._settings.client[self.__class__.__name__] = SettingsSection(self.__class__.__name__, self._settings.client._parser, self._settings.client._reference)
+        self._settings.client[self.__class__.__name__] = SettingsSection(self.__class__.__name__, self._settings.client._reference, self._settings.client._parser)
         # create reference to this component's config section
         self._config: SettingsSection = self._settings.client[self.__class__.__name__]  # type: ignore
 

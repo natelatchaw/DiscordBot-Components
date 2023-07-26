@@ -117,7 +117,7 @@ class OpenAI():
     async def __setup__(self, *args, **kwargs) -> None:
         key: str = self.__class__.__name__
         # create a config section for Audio
-        self._settings.client[key] = Section(key, self._settings.client._parser, self._settings.client._reference)
+        self._settings.client[key] = Section(key, self._settings.client._reference, self._settings.client._parser)
         # create reference to Audio config section
         self._config: Section = self._settings.client[key]
         # set the api key

@@ -78,6 +78,33 @@ class EC2():
         except:
             self._config[key] = ""
             return None
+    
+    @property
+    def whitelist(self) -> List[int]:
+        key: str = 'whitelist'
+        value: Optional[str] = None
+        try:
+            value = self._config[key]
+            if value and isinstance(value, str):
+                return [int(id) for id in value.split(',')]
+            else:
+                return []
+        except:
+            self._config[key] = ""
+            return []
+    @whitelist.setter
+    def whitelist(self, ids: List[int]) -> None:
+        key: str = 'whitelist'
+        value: Optional[str] = None
+        try:
+            values = ",".join([str(id) for id in ids])
+            logging.error("Values:" + values)
+            self._config[key] = values
+            return None
+        except:
+            raise
+            self._config[key] = ""
+            return None
         
     
 
@@ -95,11 +122,9 @@ class EC2():
     async def __setup__(self, *args, **kwargs) -> None:
         key: str = self.__class__.__name__
         # create a config section for Audio
-        self._settings.client[key] = Section(key, self._settings.client._parser, self._settings.client._reference)
+        self._settings.client[key] = Section(key, self._settings.client._reference, self._settings.client._parser)
         # create reference to Audio config section
         self._config: Section = self._settings.client[key]
-
-        self.whitelist: List[int] = []
 
         params: Dict[str, str] = {
             'aws_access_key_id': self.key_id,
@@ -180,7 +205,9 @@ class EC2():
             return
 
         if user_id not in self.whitelist:
-            self.whitelist.append(user_id)
+            temp_list = list(self.whitelist)
+            temp_list.append(user_id)
+            self.whitelist = temp_list
             await interaction.followup.send(f'{user_id} has been added to the allowlist.')
             return
         else:
@@ -207,7 +234,9 @@ class EC2():
             return
         
         if user_id in self.whitelist:
-            self.whitelist.remove(user_id)
+            temp_list = list(self.whitelist)
+            temp_list.remove(user_id)
+            self.whitelist = temp_list
             await interaction.followup.send(f'{user_id} has been removed from the allowlist.')
             return
         else:
