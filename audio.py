@@ -21,7 +21,7 @@ from bot.database.column import ColumnBuilder
 from bot.database.storable import TStorable
 from bot.database.table import Table, TableBuilder
 from bot.settings.settings import Settings
-from discord import AudioSource, Interaction
+from discord import AudioSource, Interaction, StageChannel, VoiceChannel, VoiceState
 from discord.app_commands import Range, describe
 
 RequestType = TypeVar('RequestType')
@@ -41,7 +41,7 @@ class Audio():
         value: Optional[str] = None
         try:
             value = self._config[key]
-            return float(value) if value and isinstance(value, str) else None
+            return float(value) if value else None
         except KeyError:
             self._config[key] = ""
             return None
@@ -60,7 +60,7 @@ class Audio():
         value: Optional[str] = None
         try:
             value = self._config[key]
-            if value and isinstance(value, str):
+            if value:
                 return value
         except:
             self._config[key] = ''
@@ -72,7 +72,7 @@ class Audio():
         value: Optional[str] = None
         try:
             value = self._config[key]
-            if value and isinstance(value, str):
+            if value:
                 return value
         except:
             self._config[key] = ''
@@ -83,7 +83,7 @@ class Audio():
 
     #region Lifecycle Events
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Tuple[Any], **kwargs: Dict[str, Any]):
         """
         Initializes state management objects for the audio loop
         """
@@ -94,7 +94,7 @@ class Audio():
         self._client: Optional[discord.VoiceClient] = None
 
         try:
-            self._settings: Settings = kwargs['settings']
+            self._settings: Settings = kwargs['settings'] if isinstance(kwargs['settings'], Settings) else Settings()
         except KeyError as error:
             raise Exception(f'Key {error} was not found in provided kwargs')
 
@@ -105,7 +105,7 @@ class Audio():
         """
 
         # create a config section for Audio
-        self._settings.client[self.__class__.__name__] = Section(self.__class__.__name__, self._settings.client._reference, self._settings.client._parser)
+        self._settings.client[self.__class__.__name__] = Section(self.__class__.__name__, self._settings.client.path, self._settings.client._parser)
         # create reference to Audio config section
         self._config: Section = self._settings.client[self.__class__.__name__]
         # create database instance
@@ -213,11 +213,11 @@ class Audio():
             # get the user's voice state
             state: Optional[discord.VoiceState] = interaction.user.voice  # type: ignore
             # if the user doesn't have a voice state, raise error
-            if not state:
+            if not isinstance(state, VoiceState):
                 raise Audio.InvalidChannelError(None)
 
             # if the voice state does not reference a channel, raise error
-            if not state.channel:
+            if not isinstance(state.channel, Union[VoiceChannel, StageChannel]):
                 raise Audio.InvalidChannelError(state.channel)
 
             # connect to the channel and get a voice client
@@ -314,10 +314,14 @@ class Audio():
         # extract info for the provided content
         data: Optional[Dict[str, Any]] = downloader.extract_info(content, download=False)
 
+        # if unexpected data was extracted
+        if not isinstance(data, Dict): 
+            log.warn(f'Unable to extract info from provided content: {content}')
+            return
+
         # get the entries property, if it exists
         entries: Optional[List[Any]] = data.get('entries') if data else None
-        # if the data contains a list of entries, use the list;
-        # otherwise create list from data (single entry)
+        # if the data contains a list of entries, use the list, otherwise create list from data (single entry)
         results: List[Optional[Dict[str, Any]]] = entries if entries else [data]
         # return the first available result
         result: Optional[Dict[str, Any]] = results[0]
@@ -400,8 +404,9 @@ class Audio():
             await followup.send(embed=embed)
 
         except youtube_dl.utils.DownloadError as exception:
-            ansi_escape: re.Pattern = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-            inner: str = ansi_escape.sub('', str(exception.msg))
+            ansi_escape: re.Pattern[str] = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+            message: str = exception.msg if isinstance(exception.msg, str) else "Unknown error message format"
+            inner: str = ansi_escape.sub('', message) 
             await followup.send(f'An error occurred during download.\nDetails: {inner}')
             raise
 
@@ -438,7 +443,7 @@ class Audio():
         metadata: Optional[Audio.Metadata] = await self.__skip__(interaction)
 
         # generate an embed from the song request data
-        embed: Optional[discord.Embed] = Audio.RequestEmbed(interaction, metadata) if metadata else None
+        #embed: Optional[discord.Embed] = Audio.RequestEmbed(interaction, metadata) if metadata else None
         # determine whether the message should be ephemeral
         ephemeral: bool = not metadata
         # send the embed
@@ -528,22 +533,22 @@ class Audio():
             id: int = interaction.id
             user_id: int = interaction.user.id
 
-            video_id: str = dict.get('id', str())
+            video_id: str | Any = dict.get('id', str())
             if not isinstance(video_id, str): raise KeyError('id')
 
-            title: str = dict.get('title', str())
+            title: str | Any = dict.get('title', str())
             if not isinstance(title, str): raise KeyError('title')
 
-            channel: str = dict.get('channel', str())
+            channel: str | Any = dict.get('channel', str())
             if not isinstance(channel, str): raise KeyError('channel')
 
-            thumbnail: str = dict.get('thumbnail', str())
-            if not isinstance(channel, str): raise KeyError('thumbnail')
+            thumbnail: str | Any = dict.get('thumbnail', str())
+            if not isinstance(thumbnail, str): raise KeyError('thumbnail')
 
-            url: str = dict.get('webpage_url', str())
+            url: str | Any = dict.get('webpage_url', str())
             if not isinstance(url, str): raise KeyError('webpage_url')
 
-            source: str = dict.get('url', str())
+            source: str | Any = dict.get('url', str())
             if not isinstance(source, str): raise KeyError('url')
 
             return Audio.Metadata(id, user_id, video_id, title, channel, thumbnail, url, source)
