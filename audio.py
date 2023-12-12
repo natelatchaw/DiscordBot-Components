@@ -282,7 +282,7 @@ class Audio():
         #
         return
 
-    
+
     async def __stop__(self, interaction: Interaction) -> None:
         """
         Stops audio playback.
@@ -656,7 +656,7 @@ class Audio():
         def __iter__(self) -> Iterator[RequestType]:
             return self._deque.__iter__()
 
-    
+
     class RequestEmbed(discord.Embed):
         
         def __init__(self, interaction: discord.Interaction, current: Audio.Metadata, large_image: bool = True):
@@ -671,7 +671,7 @@ class Audio():
             self.set_image(url=current.thumbnail if current and large_image else None)
             self.set_thumbnail(url=current.thumbnail if current and not large_image else None)
 
-    
+
     class RequestQueueEmbed(discord.Embed):
 
         def __init__(self, interaction: discord.Interaction, metadata: List[Audio.Metadata], current: Optional[Audio.Metadata] = None, large_image: bool = False):
@@ -746,7 +746,7 @@ class Audio():
             reference: str = channel.mention if channel else 'unknown'
             message: str = f'Cannot connect to {reference} channel'
             super().__init__(message, exception)
-    
+
     #endregion
 
 
