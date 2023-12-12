@@ -161,6 +161,9 @@ class Audio():
         log.debug(f"Beginning track '{request.metadata.title}'")
         # return if client is unavailable
         if self._client is None: return
+
+        # buffer out the first byte sequence of the source to prevent audio jitter
+        start: bytes = request.source.read()
         # play the request
         self._client.play(request.source, after=self.__on_complete__)
         
